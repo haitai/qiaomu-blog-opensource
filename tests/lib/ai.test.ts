@@ -53,6 +53,24 @@ async function readStreamText(stream: ReadableStream<Uint8Array>) {
   return output
 }
 
+async function readStreamChunks(stream: ReadableStream<Uint8Array>) {
+  const reader = stream.getReader()
+  const decoder = new TextDecoder()
+  const chunks: string[] = []
+
+  while (true) {
+    const { done, value } = await reader.read()
+    if (done) break
+    const chunk = decoder.decode(value, { stream: true })
+    if (chunk) chunks.push(chunk)
+  }
+
+  const tail = decoder.decode()
+  if (tail) chunks.push(tail)
+
+  return chunks
+}
+
 describe('ai transformEditorSelectionStream', () => {
   beforeEach(() => {
     vi.clearAllMocks()
@@ -65,8 +83,8 @@ describe('ai transformEditorSelectionStream', () => {
         { reasoning_content: '继续分析', finish_reason: 'length' },
       ]))
       .mockResolvedValueOnce(buildStream([
-        { content: '处理后的最终答案', finish_reason: null },
-        { content: '', finish_reason: 'stop' },
+        { content: '处理后的', finish_reason: null },
+        { content: '最终答案', finish_reason: 'stop' },
       ]))
 
     const stream = await transformEditorSelectionStream('原始文本', 'custom', {
@@ -80,5 +98,24 @@ describe('ai transformEditorSelectionStream', () => {
 
     await expect(readStreamText(stream)).resolves.toBe('处理后的最终答案')
     expect(mocks.createCompletion).toHaveBeenCalledTimes(2)
+  })
+
+  it('preserves streamed chunk boundaries for foreground rendering', async () => {
+    mocks.createCompletion.mockResolvedValueOnce(buildStream([
+      { content: '第一段', finish_reason: null },
+      { content: '第二段', finish_reason: 'stop' },
+    ]))
+
+    const stream = await transformEditorSelectionStream('原始文本', 'custom', {
+      customPrompt: '直接输出',
+      env: {
+        AI_API_KEY: 'test-key',
+        AI_BASE_URL: 'https://api.openai.com/v1',
+        AI_MODEL: 'gpt-test',
+      },
+    })
+
+    await expect(readStreamChunks(stream)).resolves.toEqual(['第一段', '第二段'])
+    expect(mocks.createCompletion).toHaveBeenCalledTimes(1)
   })
 })

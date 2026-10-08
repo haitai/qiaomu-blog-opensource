@@ -1,5 +1,6 @@
 import { getSetting, setSetting } from '@/lib/db'
 import { isAdminAuthenticated, COOKIE_NAME } from '@/lib/admin-auth'
+import { invalidatePublicContentCache } from '@/lib/cache'
 import { getRouteEnvWithDb, jsonError, jsonOk, parseJsonBody } from '@/lib/server/route-helpers'
 import { cookies } from 'next/headers'
 import type { NextRequest } from 'next/server'
@@ -47,6 +48,7 @@ export async function POST(req: NextRequest) {
     if (!route.ok) return route.response
 
     await setSetting(route.db, key, typeof value === 'string' ? value : JSON.stringify(value))
+    await invalidatePublicContentCache(route.env)
     return jsonOk({ success: true })
   } catch (error) {
     console.error('Set setting error:', error)

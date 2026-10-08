@@ -8,6 +8,7 @@ const mocks = vi.hoisted(() => ({
   listAiPostGenerators: vi.fn(),
   resolveAiProfileConfig: vi.fn(),
   resolveAiImageProfileConfig: vi.fn(),
+  generateEditorImage: vi.fn(),
 }))
 
 vi.mock('openai', () => ({
@@ -44,7 +45,15 @@ vi.mock('@/lib/ai-image-config', async () => {
   }
 })
 
-import { generatePostMetadata } from '@/lib/ai-post-generators'
+vi.mock('@/lib/ai-image', async () => {
+  const actual = await vi.importActual<typeof import('@/lib/ai-image')>('@/lib/ai-image')
+  return {
+    ...actual,
+    generateEditorImage: mocks.generateEditorImage,
+  }
+})
+
+import { generatePostCover, generatePostMetadata } from '@/lib/ai-post-generators'
 
 describe('ai-post-generators', () => {
   beforeEach(() => {
@@ -318,5 +327,121 @@ describe('ai-post-generators', () => {
 
     expect(result.value).toBe('testing-ai-writing-editor')
     expect(mocks.workersRun).toHaveBeenCalledTimes(1)
+  })
+
+  it('retries cover generation with the default image profile after a transient provider failure', async () => {
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => undefined)
+    const generatedImage = {
+      key: 'image/2026/06/ai-cover-test.webp',
+      url: '/api/images/image%2F2026%2F06%2Fai-cover-test.webp',
+      variants: {
+        raw: '/api/images/image%2F2026%2F06%2Fai-cover-test.webp',
+        content: '/api/images/image%2F2026%2F06%2Fai-cover-test.webp?w=1600',
+        thumb: '/api/images/image%2F2026%2F06%2Fai-cover-test.webp?w=320',
+        cover: '/api/images/image%2F2026%2F06%2Fai-cover-test.webp?w=1600&h=900',
+      },
+      prompt: '封面 prompt',
+      revisedPrompt: '封面 prompt',
+      alt: '封面',
+      actionLabel: '封面生成',
+      aspectRatio: '16:9',
+      resolution: '1k',
+      size: '1024x576',
+      profileName: 'HiAPI-GPT-IMG-2',
+      model: 'gpt-image-2-beta',
+      mimeType: 'image/webp',
+      sizeBytes: 120,
+      assetId: 10,
+    }
+
+    try {
+      mocks.getAiPostGeneratorByTarget.mockResolvedValue({
+        id: 4,
+        target_key: 'cover',
+        label: '封面生成',
+        description: '生成封面',
+        prompt: '生成文章封面',
+        provider_mode: 'profile',
+        text_profile_id: null,
+        image_profile_id: 3,
+        workers_model: '',
+        temperature: 0.2,
+        max_tokens: 120,
+        aspect_ratio: '16:9',
+        resolution: '1k',
+        is_enabled: 1,
+        is_builtin: 1,
+        created_at: 0,
+        updated_at: 0,
+      })
+      mocks.resolveAiImageProfileConfig
+        .mockResolvedValueOnce({
+          id: 3,
+          name: '兔子GPT-IMG-2',
+          provider: 'tuzi',
+          provider_name: '兔子 API',
+          provider_type: 'openai_images',
+          provider_category: '',
+          api_key_url: '',
+          base_url: 'https://api.tu-zi.com/v1',
+          model: 'gpt-image-2',
+          api_key: 'primary-key',
+          api_key_masked: 'sk-***',
+          is_default: 0,
+        })
+        .mockResolvedValueOnce({
+          id: 4,
+          name: 'HiAPI-GPT-IMG-2',
+          provider: 'custom',
+          provider_name: 'HiAPI',
+          provider_type: 'openai_images',
+          provider_category: '',
+          api_key_url: '',
+          base_url: 'https://api.hiapi.ai/v1',
+          model: 'gpt-image-2-beta',
+          api_key: 'fallback-key',
+          api_key_masked: 'sk-***',
+          is_default: 1,
+        })
+      mocks.generateEditorImage
+        .mockRejectedValueOnce(new Error('error code: 525'))
+        .mockResolvedValueOnce(generatedImage)
+
+      const result = await generatePostCover({
+        title: 'Ask AI 封面',
+        content: '正文内容',
+        category: 'AI',
+        description: '',
+        tags: [],
+        db: {} as D1Database,
+        images: { put: vi.fn() },
+        env: {},
+      })
+
+      expect(result.image).toBe(generatedImage)
+      expect(mocks.generateEditorImage).toHaveBeenCalledTimes(2)
+      expect(mocks.generateEditorImage).toHaveBeenNthCalledWith(1, expect.objectContaining({
+        action: 'custom',
+        articleTitle: 'Ask AI 封面',
+        profileId: 3,
+        source: 'cover_generator',
+      }))
+      expect(mocks.generateEditorImage).toHaveBeenNthCalledWith(2, expect.objectContaining({
+        action: 'custom',
+        articleTitle: 'Ask AI 封面',
+        profileId: 4,
+        source: 'cover_generator',
+      }))
+      expect(warn).toHaveBeenCalledWith(
+        '[ai-post-cover] Primary image profile failed; retrying with default profile',
+        expect.objectContaining({
+          profileId: 3,
+          fallbackProfileId: 4,
+          error: 'error code: 525',
+        }),
+      )
+    } finally {
+      warn.mockRestore()
+    }
   })
 })

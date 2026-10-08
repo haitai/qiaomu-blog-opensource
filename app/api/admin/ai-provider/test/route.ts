@@ -9,6 +9,10 @@ import {
   normalizeBaseUrl,
   resolveAiConfigSecret,
 } from '@/lib/ai-provider-profiles'
+import {
+  isAnthropicCompatibleConfig,
+  runAnthropicCompatibleText,
+} from '@/lib/anthropic-compatible'
 
 function isGeminiBaseUrl(baseUrl: string): boolean {
   return /generativelanguage\.googleapis\.com/i.test(baseUrl)
@@ -113,12 +117,18 @@ export async function POST(req: NextRequest) {
     base_url?: string
     api_key?: string
     model?: string
+    provider?: string
+    provider_name?: string
+    provider_type?: string
     temperature?: number
     max_tokens?: number
   }
 
   const profileId = Number(body.profile_id)
   let selectedProfile: {
+    provider: string
+    provider_name: string
+    provider_type: string
     base_url: string
     model: string
     api_key_encrypted: string
@@ -126,11 +136,14 @@ export async function POST(req: NextRequest) {
 
   if (Number.isFinite(profileId) && profileId > 0) {
     selectedProfile = await db.prepare(`
-      SELECT base_url, model, api_key_encrypted
+      SELECT provider, provider_name, provider_type, base_url, model, api_key_encrypted
       FROM ai_provider_profiles
       WHERE id = ?
       LIMIT 1
     `).bind(profileId).first<{
+      provider: string
+      provider_name: string
+      provider_type: string
       base_url: string
       model: string
       api_key_encrypted: string
@@ -139,6 +152,9 @@ export async function POST(req: NextRequest) {
 
   const normalizedBaseUrl = normalizeBaseUrl(body.base_url || selectedProfile?.base_url || '')
   const normalizedModel = (body.model || selectedProfile?.model || '').trim()
+  const provider = (body.provider || selectedProfile?.provider || '').trim()
+  const providerName = (body.provider_name || selectedProfile?.provider_name || '').trim()
+  const providerType = (body.provider_type || selectedProfile?.provider_type || 'openai_compatible').trim()
   const temperature = clampTemperature(Number(body.temperature))
   const maxTokens = Math.max(1, Math.min(256, Math.floor(clampMaxTokens(Number(body.max_tokens)))))
 
@@ -179,6 +195,17 @@ export async function POST(req: NextRequest) {
         }),
         signal: AbortSignal.timeout(15000),
       })
+    } else if (isAnthropicCompatibleConfig({ providerType, provider, providerName })) {
+      await runAnthropicCompatibleText({
+        apiKey: key,
+        baseURL: normalizedBaseUrl,
+        model: normalizedModel,
+        messages: [{ role: 'user', content: 'Say "OK"' }],
+        temperature,
+        maxTokens,
+        signal: AbortSignal.timeout(15000),
+      })
+      res = new Response('{}')
     } else {
       res = await fetch(`${normalizedBaseUrl}/chat/completions`, {
         method: 'POST',

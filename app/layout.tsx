@@ -1,13 +1,14 @@
 import type { Metadata } from "next";
 import localFont from "next/font/local";
+import Script from "next/script";
 import "./globals.css";
 import { GlobalShortcuts } from "@/components/GlobalShortcuts";
 import { ToastProvider } from "@/components/Toast";
 import { CustomJsInjector } from "@/components/CustomJsInjector";
 import { FONT_CONFIG, THEME_OPTIONS, THEME_STORAGE_KEY, normalizeTheme } from "@/lib/appearance";
 import { getAppCloudflareEnv } from "@/lib/cloudflare";
-import { getSetting } from "@/lib/db";
 import { resolveDefaultSiteCoverImage } from "@/lib/default-cover-images";
+import { getPublicSettings } from "@/lib/public-site-cache";
 import { getSiteUrl, getSiteUrlObject } from "@/lib/site-config";
 
 const geistSans = localFont({
@@ -36,6 +37,10 @@ const geistMono = localFont({
 
 const SITE_URL = getSiteUrl()
 const DEFAULT_SITE_OG_IMAGE = resolveDefaultSiteCoverImage(SITE_URL)
+
+function optionalEnv(value: string | undefined) {
+  return value?.trim() || ''
+}
 
 export const metadata: Metadata = {
   metadataBase: getSiteUrlObject(),
@@ -94,17 +99,19 @@ export default async function RootLayout({
   let customJs = ''
   let bodyFont = ''
   let defaultTheme = 'default'
+  let umamiWebsiteId = optionalEnv(process.env.NEXT_PUBLIC_UMAMI_WEBSITE_ID)
+  let umamiScriptUrl = optionalEnv(process.env.NEXT_PUBLIC_UMAMI_SCRIPT_URL)
+  let umamiDomains = optionalEnv(process.env.NEXT_PUBLIC_UMAMI_DOMAINS)
   try {
     const env = await getAppCloudflareEnv()
+    umamiWebsiteId = optionalEnv(env?.NEXT_PUBLIC_UMAMI_WEBSITE_ID) || umamiWebsiteId
+    umamiScriptUrl = optionalEnv(env?.NEXT_PUBLIC_UMAMI_SCRIPT_URL) || umamiScriptUrl
+    umamiDomains = optionalEnv(env?.NEXT_PUBLIC_UMAMI_DOMAINS) || umamiDomains
     if (env?.DB) {
-      const [customJsValue, bodyFontValue, defaultThemeValue] = await Promise.all([
-        getSetting(env.DB, 'custom_js'),
-        getSetting(env.DB, 'body_font'),
-        getSetting(env.DB, 'default_theme'),
-      ])
-      customJs = customJsValue || ''
-      bodyFont = bodyFontValue || ''
-      defaultTheme = normalizeTheme(defaultThemeValue)
+      const settings = await getPublicSettings(env, ['custom_js', 'body_font', 'default_theme'])
+      customJs = settings.custom_js || ''
+      bodyFont = settings.body_font || ''
+      defaultTheme = normalizeTheme(settings.default_theme)
     }
   } catch {}
 
@@ -173,6 +180,15 @@ export default async function RootLayout({
           <GlobalShortcuts />
           {children}
         </ToastProvider>
+        {umamiWebsiteId && umamiScriptUrl && (
+          <Script
+            id="umami-analytics"
+            src={umamiScriptUrl}
+            data-website-id={umamiWebsiteId}
+            data-domains={umamiDomains || undefined}
+            strategy="afterInteractive"
+          />
+        )}
         {customJs && <CustomJsInjector code={customJs} />}
       </body>
     </html>

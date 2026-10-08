@@ -27,7 +27,7 @@ function AudioComponent({ node }: NodeViewProps) {
   }, [src])
 
   return (
-    <NodeViewWrapper className="audio-wrapper">
+    <NodeViewWrapper data-type="audio" className="audio-wrapper">
       <div className="my-4">
         <audio
           ref={audioRef}

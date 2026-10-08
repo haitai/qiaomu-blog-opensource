@@ -1,16 +1,29 @@
-import type { Database } from '@/lib/repositories/schema'
+import { ensureSchema, type Database } from '@/lib/repositories/schema'
 import type { CategoryRow } from '@/lib/repositories/types'
 
 // 获取所有分类
 export async function getCategories(db: Database): Promise<CategoryRow[]> {
+  await ensureSchema(db)
+
   const { results } = await db
-    .prepare('SELECT name, slug, post_count FROM categories ORDER BY name')
+    .prepare(
+      `SELECT categories.name,
+              categories.slug,
+              COALESCE(SUM(CASE WHEN posts.deleted_at IS NULL THEN 1 ELSE 0 END), 0) as post_count
+       FROM categories
+       LEFT JOIN posts
+         ON posts.category = categories.name
+       GROUP BY categories.id, categories.name, categories.slug
+       ORDER BY categories.name`,
+    )
     .all<CategoryRow>()
 
   return results
 }
 
 export async function getPublicCategories(db: Database): Promise<CategoryRow[]> {
+  await ensureSchema(db)
+
   const { results } = await db
     .prepare(
       `SELECT categories.name, categories.slug, COUNT(posts.id) as post_count
@@ -31,11 +44,14 @@ export async function getPublicCategories(db: Database): Promise<CategoryRow[]> 
 
 // 创建分类
 export async function createCategory(db: Database, name: string, slug: string): Promise<void> {
+  await ensureSchema(db)
   await db.prepare('INSERT OR IGNORE INTO categories (name, slug) VALUES (?, ?)').bind(name, slug).run()
 }
 
 // 更新分类
 export async function updateCategory(db: Database, oldSlug: string, name: string, newSlug: string): Promise<void> {
+  await ensureSchema(db)
+
   const cat = await db
     .prepare('SELECT name FROM categories WHERE slug = ?')
     .bind(oldSlug)
@@ -50,5 +66,6 @@ export async function updateCategory(db: Database, oldSlug: string, name: string
 
 // 删除分类
 export async function deleteCategory(db: Database, slug: string): Promise<void> {
+  await ensureSchema(db)
   await db.prepare('DELETE FROM categories WHERE slug = ?').bind(slug).run()
 }

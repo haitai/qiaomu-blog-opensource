@@ -97,14 +97,10 @@ export function ApiTokensManager() {
   }
 
   return (
-    <div className="space-y-6">
-      <p className="text-sm text-[var(--editor-muted)]">
-        API Token 用于 Obsidian 插件、Chrome 插件、Claude Skill 等外部工具调用博客接口。
-      </p>
-
+    <div className="space-y-4">
       {/* 新 Token 提示（只显示一次） */}
       {newToken && (
-        <div className="rounded-lg border border-amber-300 bg-amber-50 p-4 space-y-2">
+        <div className="space-y-2 rounded-xl border border-amber-300 bg-amber-50 p-4">
           <p className="text-sm font-medium text-amber-800">
             Token 已创建！请立即复制保存，此后不再显示完整 Token。
           </p>
@@ -129,7 +125,7 @@ export function ApiTokensManager() {
       )}
 
       {/* 创建新 Token */}
-      <div className="flex gap-2">
+      <div className="grid gap-2 md:grid-cols-[minmax(0,1fr)_auto]">
         <input
           type="text"
           value={newName}
@@ -142,12 +138,12 @@ export function ApiTokensManager() {
         <button
           onClick={createToken}
           disabled={creating || !newName.trim()}
-          className="px-4 py-2 text-sm bg-[var(--editor-accent)] text-white rounded-lg font-medium
+          className="px-4 py-2 text-sm bg-[var(--editor-accent)] text-white rounded-lg font-semibold
                      hover:brightness-105 disabled:opacity-50"
         >
-            {creating ? '创建中...' : '生成 Token'}
-          </button>
-        </div>
+          {creating ? '创建中…' : '生成 Token'}
+        </button>
+      </div>
 
       {/* Token 列表 */}
       {tokens.length === 0 ? (
@@ -155,11 +151,11 @@ export function ApiTokensManager() {
           暂无 API Token
         </p>
       ) : (
-        <div className="space-y-2">
+        <div className="max-h-[320px] overflow-y-auto overscroll-contain rounded-xl border border-[var(--editor-line)] bg-[var(--background)]">
           {tokens.map((t) => (
             <div
               key={t.id}
-              className="flex items-center justify-between px-4 py-3 bg-[var(--editor-panel)] border border-[var(--editor-line)] rounded-lg"
+              className="flex items-center justify-between gap-3 border-b border-[var(--editor-line)] px-4 py-3 last:border-b-0"
             >
               <div className="min-w-0">
                 <div className="flex items-center gap-2">

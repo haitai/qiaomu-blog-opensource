@@ -67,6 +67,7 @@ export async function POST(req: NextRequest) {
       profileId,
       db,
       env: aiEnv,
+      signal: req.signal,
     })
 
     return new Response(stream, {

@@ -24,6 +24,152 @@ CREATE INDEX idx_posts_slug ON posts(slug);
 CREATE INDEX idx_posts_category ON posts(category);
 CREATE INDEX idx_posts_published ON posts(published_at DESC);
 
+-- 旧 slug 映射：自定义 slug 改名后，旧链接仍可解析到同一篇文章
+CREATE TABLE post_slug_aliases (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  alias_slug TEXT UNIQUE NOT NULL,
+  post_id INTEGER NOT NULL,
+  canonical_slug TEXT NOT NULL,
+  created_at INTEGER DEFAULT (strftime('%s', 'now')),
+  updated_at INTEGER DEFAULT (strftime('%s', 'now')),
+  FOREIGN KEY (post_id) REFERENCES posts(id) ON DELETE CASCADE
+);
+
+CREATE INDEX idx_post_slug_aliases_post_id ON post_slug_aliases(post_id);
+
+-- 媒体资产库：R2 文件是实体，文章使用关系另存
+CREATE TABLE media_assets (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  type TEXT NOT NULL DEFAULT 'image',
+  source TEXT NOT NULL DEFAULT 'upload',
+  r2_key TEXT,
+  url TEXT NOT NULL UNIQUE,
+  variants_json TEXT,
+  mime_type TEXT,
+  size_bytes INTEGER,
+  width INTEGER,
+  height INTEGER,
+  alt TEXT,
+  prompt TEXT,
+  revised_prompt TEXT,
+  model TEXT,
+  provider_name TEXT,
+  aspect_ratio TEXT,
+  resolution TEXT,
+  created_at INTEGER DEFAULT (strftime('%s', 'now')),
+  updated_at INTEGER DEFAULT (strftime('%s', 'now'))
+);
+
+CREATE INDEX idx_media_assets_type_created ON media_assets(type, created_at DESC);
+CREATE INDEX idx_media_assets_source_created ON media_assets(source, created_at DESC);
+
+CREATE TABLE article_asset_links (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  asset_id INTEGER NOT NULL,
+  post_id INTEGER,
+  slug TEXT,
+  role TEXT NOT NULL DEFAULT 'inline',
+  section_title TEXT,
+  section_number INTEGER,
+  inserted_at INTEGER DEFAULT (strftime('%s', 'now')),
+  tool_call_id TEXT,
+  session_id TEXT,
+  created_at INTEGER DEFAULT (strftime('%s', 'now')),
+  FOREIGN KEY (asset_id) REFERENCES media_assets(id) ON DELETE CASCADE,
+  FOREIGN KEY (post_id) REFERENCES posts(id) ON DELETE SET NULL
+);
+
+CREATE INDEX idx_article_asset_links_asset_id ON article_asset_links(asset_id);
+CREATE INDEX idx_article_asset_links_post_id ON article_asset_links(post_id, inserted_at DESC);
+CREATE INDEX idx_article_asset_links_slug ON article_asset_links(slug, inserted_at DESC);
+
+CREATE TABLE ai_chat_tool_actions (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  tool_call_id TEXT NOT NULL UNIQUE,
+  session_id TEXT,
+  post_id INTEGER,
+  slug TEXT,
+  action_type TEXT NOT NULL,
+  asset_id INTEGER,
+  status TEXT NOT NULL DEFAULT 'success',
+  error_message TEXT,
+  applied_at INTEGER DEFAULT (strftime('%s', 'now')),
+  created_at INTEGER DEFAULT (strftime('%s', 'now')),
+  updated_at INTEGER DEFAULT (strftime('%s', 'now')),
+  FOREIGN KEY (asset_id) REFERENCES media_assets(id) ON DELETE SET NULL,
+  FOREIGN KEY (post_id) REFERENCES posts(id) ON DELETE SET NULL
+);
+
+CREATE INDEX idx_ai_chat_tool_actions_session ON ai_chat_tool_actions(session_id, applied_at DESC);
+CREATE INDEX idx_ai_chat_tool_actions_post_id ON ai_chat_tool_actions(post_id, applied_at DESC);
+
+-- AI 对话外部素材资源、异步任务和引用关系
+CREATE TABLE ai_research_resources (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  source_type TEXT NOT NULL,
+  url TEXT NOT NULL,
+  canonical_url TEXT NOT NULL UNIQUE,
+  platform TEXT NOT NULL DEFAULT '',
+  provider TEXT NOT NULL DEFAULT '',
+  status TEXT NOT NULL DEFAULT 'pending',
+  title TEXT NOT NULL DEFAULT '',
+  summary TEXT NOT NULL DEFAULT '',
+  excerpt TEXT NOT NULL DEFAULT '',
+  content_text TEXT NOT NULL DEFAULT '',
+  content_r2_key TEXT,
+  content_hash TEXT NOT NULL DEFAULT '',
+  error_message TEXT NOT NULL DEFAULT '',
+  created_at INTEGER DEFAULT (strftime('%s', 'now')),
+  updated_at INTEGER DEFAULT (strftime('%s', 'now'))
+);
+
+CREATE INDEX idx_ai_research_resources_type_status ON ai_research_resources(source_type, status, updated_at DESC);
+CREATE INDEX idx_ai_research_resources_platform ON ai_research_resources(platform, updated_at DESC);
+
+CREATE TABLE ai_research_jobs (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  resource_id INTEGER NOT NULL,
+  provider TEXT NOT NULL,
+  provider_task_id TEXT,
+  provider_note_id TEXT,
+  status TEXT NOT NULL DEFAULT 'pending',
+  raw_status TEXT NOT NULL DEFAULT '',
+  error_message TEXT NOT NULL DEFAULT '',
+  last_polled_at INTEGER,
+  next_poll_at INTEGER,
+  created_at INTEGER DEFAULT (strftime('%s', 'now')),
+  updated_at INTEGER DEFAULT (strftime('%s', 'now')),
+  FOREIGN KEY (resource_id) REFERENCES ai_research_resources(id) ON DELETE CASCADE
+);
+
+CREATE UNIQUE INDEX idx_ai_research_jobs_provider_task ON ai_research_jobs(provider, provider_task_id) WHERE provider_task_id IS NOT NULL;
+CREATE UNIQUE INDEX idx_ai_research_jobs_provider_note ON ai_research_jobs(provider, provider_note_id) WHERE provider_note_id IS NOT NULL;
+CREATE INDEX idx_ai_research_jobs_resource ON ai_research_jobs(resource_id, updated_at DESC);
+CREATE INDEX idx_ai_research_jobs_status_poll ON ai_research_jobs(status, next_poll_at);
+
+CREATE TABLE ai_research_links (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  resource_id INTEGER NOT NULL,
+  session_id TEXT,
+  post_id INTEGER,
+  slug TEXT,
+  role TEXT NOT NULL DEFAULT 'source',
+  created_at INTEGER DEFAULT (strftime('%s', 'now')),
+  FOREIGN KEY (resource_id) REFERENCES ai_research_resources(id) ON DELETE CASCADE,
+  FOREIGN KEY (post_id) REFERENCES posts(id) ON DELETE SET NULL
+);
+
+CREATE INDEX idx_ai_research_links_session ON ai_research_links(session_id, created_at DESC);
+CREATE INDEX idx_ai_research_links_post ON ai_research_links(post_id, created_at DESC);
+CREATE INDEX idx_ai_research_links_slug ON ai_research_links(slug, created_at DESC);
+CREATE UNIQUE INDEX idx_ai_research_links_unique ON ai_research_links(
+  resource_id,
+  COALESCE(session_id, ''),
+  COALESCE(post_id, 0),
+  COALESCE(slug, ''),
+  role
+);
+
 -- 全文搜索（SQLite FTS5）
 CREATE VIRTUAL TABLE posts_fts USING fts5(
   title,

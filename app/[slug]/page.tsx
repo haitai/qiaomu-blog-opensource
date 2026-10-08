@@ -1,7 +1,7 @@
 import { getPostBySlug, incrementViewCount, isPubliclyAccessiblePost, isSearchIndexablePost } from '@/lib/db'
 import { getAppCloudflareEnv } from '@/lib/cloudflare'
 import { verifyPassword } from '@/lib/password'
-import { notFound } from 'next/navigation'
+import { notFound, redirect } from 'next/navigation'
 import Link from 'next/link'
 import { SiteHeader } from '@/components/SiteHeader'
 import { SiteFooter } from '@/components/SiteFooter'
@@ -9,9 +9,12 @@ import { FrontPostAdminBoundary } from '@/components/FrontPostAdminBoundary'
 import { PasswordPrompt } from '@/components/PasswordPrompt'
 import { DownloadMarkdown } from '@/components/DownloadMarkdown'
 import { TwitterEmbedsEnhancer } from '@/components/TwitterEmbedsEnhancer'
+import { ArticleContentEnhancer } from '@/components/ArticleContentEnhancer'
+import { PublicArticleToc } from '@/components/ArticleToc'
 import { getSiteHeaderData } from '@/lib/site'
 import { getRelatedPosts } from '@/lib/related-content'
 import { getPublicContentCacheNamespace } from '@/lib/cache'
+import { getCachedPublicData } from '@/lib/public-site-cache'
 import { getSiteUrl } from '@/lib/site-config'
 import { resolvePostCoverImage } from '@/lib/default-cover-images'
 
@@ -98,8 +101,15 @@ export default async function PostPage({
   const post = await getPostBySlug(db, slug, getPublicContentCacheNamespace(env)).catch(() => null)
   if (!post) notFound()
   if (!isPubliclyAccessiblePost(post)) notFound()
+  if (post.slug !== slug) {
+    redirect(`/${encodeURIComponent(post.slug)}${pwd ? `?pwd=${encodeURIComponent(pwd)}` : ''}`)
+  }
 
-  const headerData = await getSiteHeaderData(db)
+  const headerData = await getCachedPublicData(
+    env,
+    'site-header',
+    () => getSiteHeaderData(db),
+  )
   const categorySlugMap = new Map(headerData.categories.map((category) => [category.name, category.slug]))
   const activeCategorySlug = headerData.categories.find((category) => category.name === post.category)?.slug ?? null
 
@@ -120,6 +130,7 @@ export default async function PostPage({
           />
           <main className="page-main mx-auto w-full max-w-3xl px-4 sm:px-6 flex-1 py-8 sm:py-12">
             <FrontPostAdminBoundary
+              postId={post.id}
               slug={post.slug}
               title={post.title}
               html={post.html}
@@ -152,6 +163,7 @@ export default async function PostPage({
           />
           <main className="page-main mx-auto w-full max-w-3xl px-4 sm:px-6 flex-1 py-8 sm:py-12">
             <FrontPostAdminBoundary
+              postId={post.id}
               slug={post.slug}
               title={post.title}
               html={post.html}
@@ -179,7 +191,12 @@ export default async function PostPage({
   const readingMinutes = Math.max(1, Math.ceil(textLength / 400))
   const searchIndexable = isSearchIndexablePost(post)
   const related = !post.password
-    ? await getRelatedPosts(db, env, post, 3).catch(() => ({ strategy: 'fts' as const, source: 'rules' as const, results: [] }))
+    ? await getCachedPublicData(
+      env,
+      `related:${post.slug}`,
+      () => getRelatedPosts(db, env, post, 3),
+      900,
+    ).catch(() => ({ strategy: 'fts' as const, source: 'rules' as const, results: [] }))
     : { strategy: 'fts' as const, source: 'rules' as const, results: [] }
   const contentContainerId = `post-content-${post.slug}`
 
@@ -229,6 +246,7 @@ export default async function PostPage({
           )
         })()}
         <FrontPostAdminBoundary
+          postId={post.id}
           slug={post.slug}
           title={post.title}
           html={post.html}
@@ -280,12 +298,15 @@ export default async function PostPage({
               </div>
             </header>
 
+            <PublicArticleToc containerId={contentContainerId} />
+
             <div
               id={contentContainerId}
               data-admin-edit-trigger
               className="rich-content"
               dangerouslySetInnerHTML={{ __html: post.html }}
             />
+            <ArticleContentEnhancer containerId={contentContainerId} html={post.html} />
             <TwitterEmbedsEnhancer containerId={contentContainerId} html={post.html} />
 
             {related.results.length > 0 && (

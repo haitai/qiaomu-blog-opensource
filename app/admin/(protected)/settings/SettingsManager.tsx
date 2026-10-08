@@ -1,6 +1,6 @@
 'use client'
 
-import { useState } from 'react'
+import { useState, type ReactNode } from 'react'
 import { Tabs } from '@/components/Tabs'
 import type { RuntimeCapabilities } from '@/lib/runtime-capabilities'
 import { normalizeTheme, type BodyFont, type Theme } from '@/lib/appearance'
@@ -15,6 +15,7 @@ import { AiImageActionsManager } from './AiImageActionsManager'
 import { AiPostGeneratorsManager } from './AiPostGeneratorsManager'
 import { RuntimeCapabilitiesPanel } from './RuntimeCapabilitiesPanel'
 import { ThirdPartyPublishingManager } from './ThirdPartyPublishingManager'
+import { UnsplashManager } from './UnsplashManager'
 
 interface Category {
   name: string
@@ -29,6 +30,14 @@ interface Props {
   initialBodyFont: string
   initialDefaultTheme: string
   initialRuntimeCapabilities: RuntimeCapabilities
+}
+
+function SettingsSection({ children }: { children: ReactNode }) {
+  return (
+    <section className="border-b border-[var(--editor-line)] pb-8 last:border-b-0 last:pb-0">
+      {children}
+    </section>
+  )
 }
 
 export function SettingsManager({
@@ -145,24 +154,35 @@ export function SettingsManager({
       content: <ThirdPartyPublishingManager />,
     },
     {
-      id: 'ai-provider',
-      label: 'AI 模型',
-      content: <AiProviderManager />,
+      id: 'llm-config',
+      label: 'LLM配置',
+      content: (
+        <div className="space-y-8">
+          <SettingsSection>
+            <AiProviderManager />
+          </SettingsSection>
+          <SettingsSection>
+            <AiActionsManager />
+          </SettingsSection>
+        </div>
+      ),
     },
     {
-      id: 'ai-actions',
-      label: 'AI 操作',
-      content: <AiActionsManager />,
-    },
-    {
-      id: 'ai-image-provider',
-      label: '图片模型',
-      content: <AiImageProviderManager />,
-    },
-    {
-      id: 'ai-image-actions',
-      label: '图片提示',
-      content: <AiImageActionsManager />,
+      id: 'image-generation-config',
+      label: '生图配置',
+      content: (
+        <div className="space-y-8">
+          <SettingsSection>
+            <AiImageProviderManager />
+          </SettingsSection>
+          <SettingsSection>
+            <AiImageActionsManager />
+          </SettingsSection>
+          <SettingsSection>
+            <UnsplashManager />
+          </SettingsSection>
+        </div>
+      ),
     },
     {
       id: 'ai-post-generators',

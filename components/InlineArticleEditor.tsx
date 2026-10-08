@@ -1,8 +1,9 @@
 'use client'
 
 import Link from 'next/link'
+import dynamic from 'next/dynamic'
 import { useRef, useState, useCallback, useEffect, useMemo } from 'react'
-import { ImageIcon, WandSparkles } from 'lucide-react'
+import { Download, FileDown, ImageIcon, Pilcrow, Send, WandSparkles } from 'lucide-react'
 import {
   EditorContent,
   EditorInstance,
@@ -11,15 +12,16 @@ import {
 import {
   createEditorExtensions,
   buildEditorProps,
+  formatChineseCopywritingInEditor,
+  type ChineseCopywritingScope,
   FormattingBubble,
   SlashMenu,
 } from '@/lib/editor-extensions'
+import { EditorTocRail } from '@/components/ArticleToc'
 import { InputModal } from '@/components/InputModal'
 import { CategorySelector } from '@/components/CategorySelector'
-import { DownloadMarkdown } from '@/components/DownloadMarkdown'
-import { ImageGenerationModal } from '@/components/ImageGenerationModal'
-import { ImageCropModal } from '@/components/ImageCropModal'
-import { AIModal } from '@/lib/ai-modal'
+import { CopyFormatDropdown, downloadMarkdownFromHtml } from '@/components/DownloadMarkdown'
+import { useToast } from '@/components/Toast'
 import { EDITOR_IMAGE_OPTIMIZE_OPTIONS, optimizeImageForUpload } from '@/lib/client-image'
 import {
   createUploadPlaceholderMarker,
@@ -37,9 +39,25 @@ import {
   useEditorUploadTriggers,
 } from '@/lib/editor-ui'
 import type { EditorImageActionTarget } from '@/lib/resizable-image'
+import { resolvePostCoverImage } from '@/lib/default-cover-images'
+import { buildAutoDescription } from '@/lib/post-utils'
+import { getSiteDisplayUrl } from '@/lib/site-config'
 import { resizeTextareaHeight, useAutoResizeTextarea } from '@/lib/textarea-autosize'
+import { focusEditorDocumentStart, isTitleEndEnter } from '@/lib/editor-title-navigation'
+import { normalizeWechatPublishingHtml } from '@/lib/wechat-publishing-enhancements'
+import {
+  extractTocFromTiptapDoc,
+  type ArticleTocItem,
+} from '@/lib/article-toc'
+
+const ImageGenerationModal = dynamic(() => import('@/components/ImageGenerationModal').then(m => m.ImageGenerationModal), { ssr: false })
+const ImageCropModal = dynamic(() => import('@/components/ImageCropModal').then(m => m.ImageCropModal), { ssr: false })
+const ImageToolModal = dynamic(() => import('@/components/ImageToolModal').then(m => m.ImageToolModal), { ssr: false })
+const WeChatPublishModal = dynamic(() => import('@/components/WeChatPublishModal').then(m => m.WeChatPublishModal), { ssr: false })
+const AIModal = dynamic(() => import('@/lib/ai-modal').then(m => m.AIModal), { ssr: false })
 
 interface InlineArticleEditorProps {
+  postId?: number | null
   slug: string
   title: string
   html: string
@@ -52,7 +70,19 @@ interface InlineArticleEditorProps {
   onExitReading?: () => void
 }
 
+function syncInlineHeadingAnchors(root: HTMLElement | null, tocItems: ArticleTocItem[]) {
+  if (!root || tocItems.length === 0) return
+
+  const headings = Array.from(root.querySelectorAll<HTMLElement>('h1, h2, h3'))
+  for (const [index, item] of tocItems.entries()) {
+    const heading = headings[index]
+    if (!heading) continue
+    heading.id = item.id
+  }
+}
+
 export function InlineArticleEditor({
+  postId = null,
   slug,
   title: initialTitle,
   html,
@@ -64,11 +94,13 @@ export function InlineArticleEditor({
   content,
   onExitReading,
 }: InlineArticleEditorProps) {
+  const normalizedInitialHtml = useMemo(() => normalizeWechatPublishingHtml(html), [html])
   const editorRef = useRef<EditorInstance | null>(null)
   const titleRef = useRef<HTMLTextAreaElement | null>(null)
   const fileInputRef = useRef<HTMLInputElement>(null)
   const fileUploadRef = useRef<HTMLInputElement>(null)
-  const originalHtmlRef = useRef(html)
+  const copywritingMenuRef = useRef<HTMLSpanElement | null>(null)
+  const originalHtmlRef = useRef(normalizedInitialHtml)
   const originalTitleRef = useRef(initialTitle)
   const originalCoverImageRef = useRef(initialCoverImage || '')
   const titleValueRef = useRef(initialTitle)
@@ -85,6 +117,13 @@ export function InlineArticleEditor({
   const [charCount, setCharCount] = useState(0)
   const [referenceImageTarget, setReferenceImageTarget] = useState<EditorImageActionTarget | null>(null)
   const [cropImageTarget, setCropImageTarget] = useState<EditorImageActionTarget | null>(null)
+  const [wechatPublishOpen, setWechatPublishOpen] = useState(false)
+  const [copywritingMenuOpen, setCopywritingMenuOpen] = useState(false)
+  const [tocItems, setTocItems] = useState<ArticleTocItem[]>([])
+  const [activeTocId, setActiveTocId] = useState('')
+  const [tocCollapsed, setTocCollapsed] = useState(false)
+  const toast = useToast()
+  const siteDisplayUrl = getSiteDisplayUrl()
 
   const checkDirty = useCallback((editor: EditorInstance, overrides?: {
     title?: string
@@ -109,6 +148,57 @@ export function InlineArticleEditor({
   useEffect(() => {
     coverImageValueRef.current = coverImage
   }, [coverImage])
+
+  useEffect(() => {
+    if (!copywritingMenuOpen) return
+
+    const handler = (event: MouseEvent) => {
+      if (copywritingMenuRef.current && !copywritingMenuRef.current.contains(event.target as Node)) {
+        setCopywritingMenuOpen(false)
+      }
+    }
+
+    document.addEventListener('mousedown', handler)
+    return () => document.removeEventListener('mousedown', handler)
+  }, [copywritingMenuOpen])
+
+  const refreshToc = useCallback((editor: EditorInstance | null) => {
+    const items = extractTocFromTiptapDoc(editor?.state.doc)
+    setTocItems(items)
+    setActiveTocId((currentId) => {
+      if (items.length === 0) return ''
+      if (currentId && items.some((item) => item.id === currentId)) return currentId
+      return items[0]?.id || ''
+    })
+    window.requestAnimationFrame(() => {
+      syncInlineHeadingAnchors(editor?.view.dom as HTMLElement | null, items)
+    })
+  }, [])
+
+  const scrollToTocItem = useCallback((item: ArticleTocItem) => {
+    setActiveTocId(item.id)
+
+    const editor = editorRef.current
+    if (!editor) return
+
+    const rawPos = Number.isFinite(item.pos) ? Number(item.pos) : 1
+    const selectionPos = Math.min(Math.max(rawPos + 1, 1), editor.state.doc.content.size)
+    editor.chain().focus().setTextSelection(selectionPos).run()
+
+    window.requestAnimationFrame(() => {
+      try {
+        const coords = editor.view.coordsAtPos(selectionPos)
+        window.scrollTo({ top: Math.max(0, coords.top + window.scrollY - 82), behavior: 'smooth' })
+        return
+      } catch {}
+
+      const target = editor.view.dom.querySelector<HTMLElement>(`#${CSS.escape(item.id)}`)
+      if (target) {
+        const top = target.getBoundingClientRect().top + window.scrollY - 82
+        window.scrollTo({ top: Math.max(0, top), behavior: 'smooth' })
+      }
+    })
+  }, [])
 
   const handleSave = async () => {
     const editor = editorRef.current
@@ -174,6 +264,78 @@ export function InlineArticleEditor({
     setFeedback(null)
   }
 
+  const getCurrentExport = () => {
+    const editor = editorRef.current
+    const normalizedTitle = titleValueRef.current.trim() || '无标题'
+    const currentHtml = editor?.getHTML() || originalHtmlRef.current
+    const currentText = editor?.getText({ blockSeparator: '\n\n' }).trim() || ''
+    const hasContent = currentText || /<(img|video|audio|iframe)\s/i.test(currentHtml)
+
+    return {
+      title: normalizedTitle,
+      html: currentHtml,
+      text: currentText,
+      hasContent: Boolean(hasContent),
+    }
+  }
+
+  const handleDownloadMarkdown = () => {
+    const current = getCurrentExport()
+    if (!current.hasContent) {
+      toast.error('正文还是空的。')
+      return
+    }
+    downloadMarkdownFromHtml(current.title, current.html)
+  }
+
+  const getCurrentAssetArticleTarget = useCallback(() => ({
+    postId,
+    slug,
+  }), [postId, slug])
+
+  const handleDownloadPdf = async () => {
+    const current = getCurrentExport()
+    if (!current.hasContent) {
+      toast.error('正文还是空的。')
+      return
+    }
+
+    try {
+      const { downloadArticleAsPdf } = await import('@/lib/wechat-copy')
+      await downloadArticleAsPdf(current.title, current.html)
+    } catch (error) {
+      toast.error(error instanceof Error ? error.message : '导出 PDF 失败')
+    }
+  }
+
+  const handleOpenWechatPublish = () => {
+    const current = getCurrentExport()
+    if (!current.hasContent) {
+      toast.error('正文还是空的。')
+      return
+    }
+    setWechatPublishOpen(true)
+  }
+
+  const handleFormatCopywriting = useCallback((scope: ChineseCopywritingScope) => {
+    const editor = editorRef.current
+    if (!editor) {
+      toast.error('编辑器还没准备好。')
+      return
+    }
+
+    const changed = formatChineseCopywritingInEditor(editor, scope)
+    setCopywritingMenuOpen(false)
+
+    if (!changed) {
+      toast.info(scope === 'document' ? '全文排版已是整理状态' : '当前段落已是整理状态')
+      return
+    }
+
+    checkDirty(editor)
+    toast.success(scope === 'document' ? '已整理全文排版' : '已整理当前段落')
+  }, [checkDirty, toast])
+
   const {
     aiModal,
     closeAiModal,
@@ -226,7 +388,11 @@ export function InlineArticleEditor({
     setFeedback(null)
     try {
       const optimizedFile = await optimizeImageForUpload(file, EDITOR_IMAGE_OPTIMIZE_OPTIONS)
-      const result = await uploadEditorFile(optimizedFile)
+      const result = await uploadEditorFile(optimizedFile, undefined, {
+        ...getCurrentAssetArticleTarget(),
+        role: 'inline',
+        source: 'upload',
+      })
       const editor = editorRef.current
       if (editor) checkDirty(editor)
       return result.url
@@ -329,6 +495,35 @@ export function InlineArticleEditor({
     }
   }
 
+  const insertCollageImage = async (file: File, targetInsertPos: number | null) => {
+    const editor = editorRef.current
+    if (!editor) {
+      setFeedback({ type: 'error', message: '编辑器还没准备好，请稍后再试。' })
+      return
+    }
+
+    setUploadingFile(true)
+    setFeedback(null)
+
+    try {
+      const result = await uploadEditorFile(file, undefined, {
+        ...getCurrentAssetArticleTarget(),
+        role: 'inline',
+        source: 'collage',
+      })
+      insertGeneratedImageAtPosition(editor, result.url, file.name || '拼图', targetInsertPos)
+      checkDirty(editor)
+    } catch (error) {
+      setFeedback({
+        type: 'error',
+        message: error instanceof Error ? error.message : '拼图上传失败',
+      })
+      throw error
+    } finally {
+      setUploadingFile(false)
+    }
+  }
+
   const autoResizeTitle = (el: HTMLTextAreaElement) => {
     resizeTextareaHeight(el)
   }
@@ -339,11 +534,28 @@ export function InlineArticleEditor({
     resizeTextareaHeight(titleRef.current)
   }, [title])
 
+  const syncEditorState = useCallback((editor: EditorInstance) => {
+    checkDirty(editor)
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    const st = editor.storage as any
+    setCharCount(st.characterCount?.characters?.() ?? 0)
+    refreshToc(editor)
+  }, [checkDirty, refreshToc])
+
+  const handleEditorCompositionEnd = useCallback(() => {
+    const editor = editorRef.current
+    if (!editor) return
+    syncEditorState(editor)
+  }, [syncEditorState])
+
   const editorProps = buildEditorProps(
     (file) => uploadImageAndGetUrl(file),
     (file) => void insertNonImageFile(file),
     'inline-main-prose',
+    handleEditorCompositionEnd,
   )
+  const currentExport = getCurrentExport()
+  const estimatedCharCount = charCount || content?.length || 0
 
   return (
     <>
@@ -368,7 +580,7 @@ export function InlineArticleEditor({
         }}
       />
 
-      {/* 右上角固顶状态栏：字数 + 保存 */}
+      {/* 右上角固顶状态栏：模式切换 + 保存 */}
       <div className="fixed top-16 right-4 sm:right-6 z-50 flex items-center gap-2 rounded-lg border border-[var(--editor-line)] bg-[var(--editor-panel)] backdrop-blur px-3 py-2 shadow-lg text-xs">
         {onExitReading ? (
           <>
@@ -380,43 +592,20 @@ export function InlineArticleEditor({
               阅读
             </button>
             <Link
-              href="/admin"
+              href={`/editor?edit=${encodeURIComponent(slug)}`}
               className="px-2 py-1 rounded-md border border-[var(--editor-line)] text-[var(--editor-ink)] hover:bg-[var(--editor-soft)] transition"
             >
               后台
             </Link>
           </>
         ) : null}
-        {charCount > 0 && (
-          <span className="tabular-nums text-[var(--stone-gray)]">
-            {charCount.toLocaleString()} 字
-          </span>
-        )}
-        <div className="flex items-center gap-1">
-          <button
-            type="button"
-            onClick={(e) => openDocumentAIModal(e.currentTarget)}
-            className="inline-flex h-7 w-7 items-center justify-center rounded-md text-[var(--editor-muted)] transition hover:bg-[var(--editor-soft)] hover:text-[var(--editor-accent)]"
-            title="Ask AI（基于标题和正文）"
-          >
-            <WandSparkles className="h-3.5 w-3.5" />
-          </button>
-          <button
-            type="button"
-            onClick={openDocumentImageModal}
-            className="inline-flex h-7 w-7 items-center justify-center rounded-md text-[var(--editor-muted)] transition hover:bg-[var(--editor-soft)] hover:text-[var(--editor-accent)]"
-            title="生成图片"
-          >
-            <ImageIcon className="h-3.5 w-3.5" />
-          </button>
-        </div>
         {feedback ? (
           <span className={`font-medium ${feedback.type === 'success' ? 'text-emerald-600' : 'text-rose-600'}`}>
             {feedback.message}
           </span>
         ) : dirty ? (
           <>
-            {charCount > 0 && <span className="text-[var(--editor-line)]" aria-hidden>|</span>}
+            {onExitReading && <span className="text-[var(--editor-line)]" aria-hidden>|</span>}
             <button
               type="button"
               onClick={handleDiscard}
@@ -439,102 +628,212 @@ export function InlineArticleEditor({
         ) : null}
       </div>
 
-      {/* 可编辑标题 */}
-      <textarea
-        ref={titleRef}
-        rows={1}
-        value={title}
-        onChange={(e) => {
-          const next = e.target.value
-          setTitle(next)
-          autoResizeTitle(e.target)
-          if (editorRef.current) checkDirty(editorRef.current, { title: next })
-        }}
-        onPaste={(e) => {
-          const files = extractFilesFromClipboard(e)
-          if (files.length === 0) return
-          e.preventDefault()
-          editorRef.current?.chain().focus().run()
-          void handleSelectedFiles(files)
-        }}
-        className="editor-title-textarea mb-2 block w-full resize-none overflow-hidden border-0 bg-transparent p-0 text-2xl font-bold leading-tight text-[var(--editor-ink)] outline-none shadow-none focus:outline-none focus-visible:outline-none sm:text-4xl"
-        style={{ fontFamily: 'Georgia, "Noto Serif SC", serif' }}
-        placeholder="文章标题"
-      />
-
-      <div className="flex flex-wrap items-center gap-2 text-xs text-[var(--stone-gray)] mb-6">
-        <CategorySelector
-          value={selectedCategory}
-          onChange={(val) => {
-            setSelectedCategory(val)
-            if (editorRef.current) checkDirty(editorRef.current, { category: val })
-          }}
+      <div>
+        <EditorTocRail
+          items={tocItems}
+          collapsed={tocCollapsed}
+          onCollapsedChange={setTocCollapsed}
+          activeId={activeTocId}
+          onActiveIdChange={setActiveTocId}
+          onItemSelect={scrollToTocItem}
+          root={editorRef.current?.view.dom as HTMLElement | null}
+          variant="article-fixed"
         />
-        {publishedAt && (
-          <>
-            <span aria-hidden>·</span>
-            <time>
-              {new Date(publishedAt * 1000).toLocaleDateString('zh-CN', {
-                year: 'numeric',
-                month: 'short',
-                day: 'numeric',
-              })}
-            </time>
-          </>
-        )}
-        {viewCount !== undefined && (
-          <>
-            <span aria-hidden>·</span>
-            <span>{viewCount} 次阅读</span>
-          </>
-        )}
-        {content && (
-          <>
-            <span aria-hidden>·</span>
-            <span>约 {Math.max(1, Math.ceil(content.length / 400))} 分钟</span>
-          </>
-        )}
-        <DownloadMarkdown title={title} html={html} />
-        {password && (
-          <>
-            <span aria-hidden>·</span>
-            <div className="flex items-center gap-1.5">
-              <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
-                <rect x="3" y="11" width="18" height="11" rx="2" ry="2"></rect>
-                <path d="M7 11V7a5 5 0 0 1 10 0v4"></path>
-              </svg>
-              <span>已加密</span>
-            </div>
-          </>
-        )}
-      </div>
 
-      <EditorRoot>
-        <EditorContent
-          // eslint-disable-next-line @typescript-eslint/no-explicit-any
-          extensions={imageExtensions as any}
-          className="editor-surface inline-editor"
-          immediatelyRender={false}
-          editorProps={editorProps}
-          onCreate={({ editor }) => {
-            editorRef.current = editor
-            editor.commands.setContent(html)
-            // eslint-disable-next-line @typescript-eslint/no-explicit-any
-            const st = editor.storage as any
-            setCharCount(st.characterCount?.characters?.() ?? 0)
-          }}
-          onUpdate={({ editor }) => {
-            editorRef.current = editor
-            checkDirty(editor)
-            // eslint-disable-next-line @typescript-eslint/no-explicit-any
-            const st = editor.storage as any
-            setCharCount(st.characterCount?.characters?.() ?? 0)
-          }}
-        >
-          <FormattingBubble />
-          <SlashMenu />
-        </EditorContent>
-      </EditorRoot>
+        <div className="min-w-0 flex-1">
+          {/* 可编辑标题 */}
+          <textarea
+            ref={titleRef}
+            rows={1}
+            value={title}
+            onChange={(e) => {
+              const next = e.target.value
+              setTitle(next)
+              autoResizeTitle(e.target)
+              if (editorRef.current) checkDirty(editorRef.current, { title: next })
+            }}
+            onPaste={(e) => {
+              const files = extractFilesFromClipboard(e)
+              if (files.length === 0) return
+              e.preventDefault()
+              editorRef.current?.chain().focus().run()
+              void handleSelectedFiles(files)
+            }}
+            onKeyDown={(event) => {
+              if (!isTitleEndEnter(event) || !editorRef.current) return
+              event.preventDefault()
+              focusEditorDocumentStart(editorRef.current)
+            }}
+            className="editor-title-textarea mb-2 block w-full resize-none overflow-hidden border-0 bg-transparent p-0 text-2xl font-bold leading-tight text-[var(--editor-ink)] outline-none shadow-none focus:outline-none focus-visible:outline-none sm:text-4xl"
+            placeholder="文章标题"
+          />
+
+          <div className="flex flex-wrap items-center gap-2 text-xs text-[var(--stone-gray)] mb-6">
+            <CategorySelector
+              value={selectedCategory}
+              onChange={(val) => {
+                setSelectedCategory(val)
+                if (editorRef.current) checkDirty(editorRef.current, { category: val })
+              }}
+            />
+            {publishedAt && (
+              <>
+                <span aria-hidden>·</span>
+                <time>
+                  {new Date(publishedAt * 1000).toLocaleDateString('zh-CN', {
+                    year: 'numeric',
+                    month: 'short',
+                    day: 'numeric',
+                  })}
+                </time>
+              </>
+            )}
+            {viewCount !== undefined && (
+              <>
+                <span aria-hidden>·</span>
+                <span>{viewCount} 次阅读</span>
+              </>
+            )}
+            {estimatedCharCount > 0 && (
+              <>
+                <span aria-hidden>·</span>
+                <span>约 {Math.max(1, Math.ceil(estimatedCharCount / 400))} 分钟</span>
+              </>
+            )}
+            {estimatedCharCount > 0 && (
+              <>
+                <span aria-hidden>·</span>
+                <span className="tabular-nums">{estimatedCharCount.toLocaleString()} 字</span>
+              </>
+            )}
+            <span className="inline-flex items-center gap-1">
+              <button
+                type="button"
+                onClick={handleDownloadMarkdown}
+                className="inline-flex h-6 w-6 items-center justify-center rounded text-[var(--stone-gray)] transition hover:bg-[var(--editor-accent)]/8 hover:text-[var(--editor-accent)]"
+                title="下载 Markdown"
+                aria-label="下载 Markdown"
+              >
+                <Download className="h-3.5 w-3.5" />
+              </button>
+              <CopyFormatDropdown
+                getTitle={() => getCurrentExport().title}
+                getHtml={() => getCurrentExport().html}
+                hasContent={() => getCurrentExport().hasContent}
+                buttonClassName="inline-flex h-6 w-6 items-center justify-center rounded text-[var(--stone-gray)] transition hover:bg-[var(--editor-accent)]/8 hover:text-[var(--editor-accent)]"
+                iconClassName="h-3.5 w-3.5"
+              />
+              <button
+                type="button"
+                onClick={handleOpenWechatPublish}
+                className="inline-flex h-6 w-6 items-center justify-center rounded text-[var(--stone-gray)] transition hover:bg-[var(--editor-accent)]/8 hover:text-[var(--editor-accent)]"
+                title="发布到公众号"
+                aria-label="发布到公众号"
+              >
+                <Send className="h-3.5 w-3.5" />
+              </button>
+              <button
+                type="button"
+                onClick={handleDownloadPdf}
+                className="inline-flex h-6 w-6 items-center justify-center rounded text-[var(--stone-gray)] transition hover:bg-[var(--editor-accent)]/8 hover:text-[var(--editor-accent)]"
+                title="下载 PDF"
+                aria-label="下载 PDF"
+              >
+                <FileDown className="h-3.5 w-3.5" />
+              </button>
+              <span className="relative inline-flex" ref={copywritingMenuRef}>
+                <button
+                  type="button"
+                  onClick={() => setCopywritingMenuOpen((open) => !open)}
+                  className="inline-flex h-6 w-6 items-center justify-center rounded text-[var(--stone-gray)] transition hover:bg-[var(--editor-accent)]/8 hover:text-[var(--editor-accent)]"
+                  title="中文排版整理"
+                  aria-label="中文排版整理"
+                  aria-expanded={copywritingMenuOpen}
+                  aria-haspopup="menu"
+                >
+                  <Pilcrow className="h-3.5 w-3.5" />
+                </button>
+                {copywritingMenuOpen && (
+                  <span className="absolute right-0 top-7 z-50 block min-w-32 rounded-lg border border-[var(--editor-line)] bg-[var(--editor-panel)] p-1 shadow-[0_14px_30px_rgba(37,32,24,0.14)]">
+                    <button
+                      type="button"
+                      onClick={() => handleFormatCopywriting('block')}
+                      className="flex w-full items-center rounded-md px-3 py-2 text-left text-sm text-[var(--editor-ink)] transition hover:bg-[var(--editor-soft)]"
+                    >
+                      当前段落
+                    </button>
+                    <button
+                      type="button"
+                      onClick={() => handleFormatCopywriting('document')}
+                      className="flex w-full items-center rounded-md px-3 py-2 text-left text-sm text-[var(--editor-ink)] transition hover:bg-[var(--editor-soft)]"
+                    >
+                      全文
+                    </button>
+                  </span>
+                )}
+              </span>
+              <button
+                type="button"
+                onClick={(e) => openDocumentAIModal(e.currentTarget)}
+                className="inline-flex h-6 w-6 items-center justify-center rounded text-[var(--stone-gray)] transition hover:bg-[var(--editor-accent)]/8 hover:text-[var(--editor-accent)]"
+                title="Ask AI（基于标题和正文）"
+                aria-label="Ask AI（基于标题和正文）"
+              >
+                <WandSparkles className="h-3.5 w-3.5" />
+              </button>
+              <button
+                type="button"
+                onMouseDown={(event) => event.preventDefault()}
+                onClick={() => openDocumentImageModal('generate')}
+                className="inline-flex h-6 w-6 items-center justify-center rounded text-[var(--stone-gray)] transition hover:bg-[var(--editor-accent)]/8 hover:text-[var(--editor-accent)]"
+                title="图片工具"
+                aria-label="图片工具"
+              >
+                <ImageIcon className="h-3.5 w-3.5" />
+              </button>
+            </span>
+            {password && (
+              <>
+                <span aria-hidden>·</span>
+                <div className="flex items-center gap-1.5">
+                  <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+                    <rect x="3" y="11" width="18" height="11" rx="2" ry="2"></rect>
+                    <path d="M7 11V7a5 5 0 0 1 10 0v4"></path>
+                  </svg>
+                  <span>已加密</span>
+                </div>
+              </>
+            )}
+          </div>
+
+          <EditorRoot>
+            <EditorContent
+              // eslint-disable-next-line @typescript-eslint/no-explicit-any
+              extensions={imageExtensions as any}
+              className="editor-surface inline-editor"
+              immediatelyRender={false}
+              editorProps={editorProps}
+              onCreate={({ editor }) => {
+                editorRef.current = editor
+                editor.commands.setContent(normalizedInitialHtml)
+                // eslint-disable-next-line @typescript-eslint/no-explicit-any
+                const st = editor.storage as any
+                setCharCount(st.characterCount?.characters?.() ?? 0)
+                refreshToc(editor)
+              }}
+              onUpdate={({ editor }) => {
+                editorRef.current = editor
+                if (editor.view.composing) return
+
+                syncEditorState(editor)
+              }}
+            >
+              <FormattingBubble />
+              <SlashMenu />
+            </EditorContent>
+          </EditorRoot>
+        </div>
+      </div>
 
       <InputModal
         open={inputModal.open}
@@ -544,47 +843,77 @@ export function InlineArticleEditor({
         onCancel={handleInputModalCancel}
       />
 
-      <ImageGenerationModal
-        open={imageModal.open}
-        contextText={imageModal.contextText}
-        historyScope="inline-article"
-        onClose={closeImageModal}
-        onInsert={insertGeneratedImage}
-      />
+      {wechatPublishOpen && (
+        <WeChatPublishModal
+          isOpen={wechatPublishOpen}
+          onClose={() => setWechatPublishOpen(false)}
+          title={currentExport.title}
+          html={currentExport.html}
+          defaultDigest={buildAutoDescription(currentExport.text || content || '')}
+          defaultSourceUrl={`https://${siteDisplayUrl}/${slug}`}
+          defaultCoverImageUrl={resolvePostCoverImage({
+            cover_image: coverImage,
+            slug,
+            title: currentExport.title,
+          })}
+        />
+      )}
 
-      <ImageGenerationModal
-        open={Boolean(referenceImageTarget)}
-        contextText=""
-        historyScope="inline-article"
-        referenceImageUrl={referenceImageTarget?.src}
-        allowReplace
-        defaultPlacementMode="replace"
-        closeOnGenerate={false}
-        generationMode="foreground"
-        onClose={() => setReferenceImageTarget(null)}
-        onInsert={(imageUrl, alt, placementMode) => {
-          if (!referenceImageTarget) return
-          applyImageActionResult(referenceImageTarget, imageUrl, alt, placementMode ?? 'replace')
-          setReferenceImageTarget(null)
-        }}
-      />
+      {imageModal.open && (
+        <ImageToolModal
+          key={`${imageModal.open ? 'open' : 'closed'}-${imageModal.mode}`}
+          open={imageModal.open}
+          mode={imageModal.mode}
+          contextText={imageModal.contextText}
+          historyScope="inline-article"
+          insertPos={imageModal.insertPos}
+          postId={postId}
+          slug={slug}
+          onClose={closeImageModal}
+          onInsertImage={insertGeneratedImage}
+          onInsertCollage={insertCollageImage}
+        />
+      )}
 
-      <ImageCropModal
-        open={Boolean(cropImageTarget)}
-        imageUrl={cropImageTarget?.src || ''}
-        imageAlt={cropImageTarget?.alt}
-        defaultPlacementMode="replace"
-        onClose={() => setCropImageTarget(null)}
-        onApply={async (file, placementMode) => {
-          if (!cropImageTarget) return
+      {Boolean(referenceImageTarget) && (
+        <ImageGenerationModal
+          open={Boolean(referenceImageTarget)}
+          contextText=""
+          historyScope="inline-article"
+          referenceImageUrl={referenceImageTarget?.src}
+          allowReplace
+          defaultPlacementMode="replace"
+          closeOnGenerate={false}
+          generationMode="foreground"
+          postId={postId}
+          slug={slug}
+          onClose={() => setReferenceImageTarget(null)}
+          onInsert={(imageUrl, alt, placementMode) => {
+            if (!referenceImageTarget) return
+            applyImageActionResult(referenceImageTarget, imageUrl, alt, placementMode ?? 'replace')
+            setReferenceImageTarget(null)
+          }}
+        />
+      )}
 
-          const uploaded = await uploadImageAndGetUrl(file)
-          applyImageActionResult(cropImageTarget, uploaded, cropImageTarget.alt || file.name, placementMode)
-          setCropImageTarget(null)
-        }}
-      />
+      {Boolean(cropImageTarget) && (
+        <ImageCropModal
+          open={Boolean(cropImageTarget)}
+          imageUrl={cropImageTarget?.src || ''}
+          imageAlt={cropImageTarget?.alt}
+          defaultPlacementMode="replace"
+          onClose={() => setCropImageTarget(null)}
+          onApply={async (file, placementMode) => {
+            if (!cropImageTarget) return
 
-      {editorRef.current && (
+            const uploaded = await uploadImageAndGetUrl(file)
+            applyImageActionResult(cropImageTarget, uploaded, cropImageTarget.alt || file.name, placementMode)
+            setCropImageTarget(null)
+          }}
+        />
+      )}
+
+      {aiModal.open && editorRef.current && (
         <AIModal
           editor={editorRef.current}
           isOpen={aiModal.open}

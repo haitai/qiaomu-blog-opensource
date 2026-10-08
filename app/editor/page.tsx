@@ -27,6 +27,7 @@ export default async function EditorPage({
   const isNew = params.new === '1'
 
   let initialData: {
+    id: number
     slug: string
     title: string
     html: string
@@ -44,7 +45,12 @@ export default async function EditorPage({
     if (env?.DB) {
       const post = await getPostBySlug(env.DB, edit)
       if (post) {
+        if (post.slug !== edit) {
+          redirect(`/editor?edit=${encodeURIComponent(post.slug)}`)
+        }
+
         initialData = {
+          id: post.id,
           slug: post.slug,
           title: post.title,
           html: post.html,
@@ -60,5 +66,7 @@ export default async function EditorPage({
     }
   }
 
-  return <NovelEditorClient initialData={initialData} skipDraftRestore={isNew} />
+  const editorKey = edit ? `edit:${edit}` : isNew ? 'new' : 'default'
+
+  return <NovelEditorClient key={editorKey} initialData={initialData} skipDraftRestore={isNew} />
 }

@@ -10,6 +10,76 @@ import type {
   StatsRow,
 } from '@/lib/repositories/types'
 
+function isPublicPostCacheEntry(value: unknown): value is PostWithTags {
+  if (!value || typeof value !== 'object') return false
+  const post = value as Partial<PostWithTags>
+  return post.status === 'published' && post.deleted_at == null && post.password == null
+}
+
+async function getSinglePostBySlug<T>(
+  db: Database,
+  slug: string,
+  exactSql: string,
+  fallbackSql: string,
+  aliasSql?: string,
+): Promise<T | null> {
+  const exact = await db.prepare(exactSql).bind(slug).first<T>()
+  if (exact) return exact
+
+  const { results } = await db.prepare(fallbackSql).bind(slug).all<T>()
+  if (results.length === 1) return results[0]
+
+  if (!aliasSql) return null
+
+  try {
+    const alias = await db.prepare(aliasSql).bind(slug).all<T>()
+    return alias.results.length === 1 ? alias.results[0] : null
+  } catch (error) {
+    if (error instanceof Error && /no such table: post_slug_aliases/i.test(error.message)) {
+      return null
+    }
+    throw error
+  }
+}
+
+export async function rememberPostSlugAlias(
+  db: Database,
+  postId: number,
+  previousSlug: string | null,
+  nextSlug: string,
+): Promise<void> {
+  await ensureSchema(db)
+
+  if (!previousSlug || previousSlug.toLowerCase() === nextSlug.toLowerCase()) return
+
+  await db
+    .prepare('DELETE FROM post_slug_aliases WHERE lower(alias_slug) = lower(?)')
+    .bind(nextSlug)
+    .run()
+
+  await db
+    .prepare(
+      `UPDATE post_slug_aliases
+       SET canonical_slug = ?, updated_at = strftime('%s', 'now')
+       WHERE post_id = ?`,
+    )
+    .bind(nextSlug, postId)
+    .run()
+
+  await db
+    .prepare(
+      `INSERT INTO post_slug_aliases (alias_slug, post_id, canonical_slug)
+       VALUES (?, ?, ?)
+       ON CONFLICT(alias_slug) DO UPDATE SET
+         post_id = excluded.post_id,
+         canonical_slug = excluded.canonical_slug,
+         updated_at = strftime('%s', 'now')
+       WHERE post_slug_aliases.post_id = excluded.post_id`,
+    )
+    .bind(previousSlug, postId, nextSlug)
+    .run()
+}
+
 // 获取文章列表（默认只返回已发布文章）
 export async function getPosts(
   db: Database,
@@ -63,30 +133,48 @@ export async function getPostBySlug(
     try {
       const cacheKey = await getCacheKey(kv, `post:${slug}`)
       const cached = await kv.get(cacheKey, 'json')
-      if (cached) {
-        return cached as PostWithTags
+      if (isPublicPostCacheEntry(cached)) {
+        return cached
       }
     } catch {
       // 缓存读取失败，继续查询数据库
     }
   }
 
-  const post = await db
-    .prepare('SELECT * FROM posts WHERE slug = ?')
-    .bind(slug)
-    .first<Post>()
+  const post = await getSinglePostBySlug<Post>(
+    db,
+    slug,
+    'SELECT * FROM posts WHERE slug = ?',
+    'SELECT * FROM posts WHERE lower(slug) = lower(?) LIMIT 2',
+    `SELECT posts.*
+     FROM posts
+     JOIN post_slug_aliases ON post_slug_aliases.post_id = posts.id
+     WHERE lower(post_slug_aliases.alias_slug) = lower(?)
+     LIMIT 2`,
+  )
 
   if (!post) return null
 
   const result = mapPostWithTags(post)
 
-  if (kv) {
-    getCacheKey(kv, `post:${slug}`)
+  if (kv && isPublicPostCacheEntry(result)) {
+    getCacheKey(kv, `post:${result.slug}`)
       .then((cacheKey) => kv.put(cacheKey, JSON.stringify(result), { expirationTtl: 3600 }))
       .catch(() => {})
   }
 
   return result
+}
+
+export async function getPostById(db: Database, id: number): Promise<PostWithTags | null> {
+  await ensureSchema(db)
+
+  const post = await db
+    .prepare('SELECT * FROM posts WHERE id = ?')
+    .bind(id)
+    .first<Post>()
+
+  return post ? mapPostWithTags(post) : null
 }
 
 export async function getPostAiSnapshot(
@@ -189,10 +277,17 @@ export async function updatePostBySlug(
 ): Promise<void> {
   await ensureSchema(db)
 
-  const post = await db
-    .prepare('SELECT id, category FROM posts WHERE slug = ?')
-    .bind(slug)
-    .first<{ id: number; category: string }>()
+  const post = await getSinglePostBySlug<{ id: number; slug: string; category: string }>(
+    db,
+    slug,
+    'SELECT id, slug, category FROM posts WHERE slug = ?',
+    'SELECT id, slug, category FROM posts WHERE lower(slug) = lower(?) LIMIT 2',
+    `SELECT posts.id, posts.slug, posts.category
+     FROM posts
+     JOIN post_slug_aliases ON post_slug_aliases.post_id = posts.id
+     WHERE lower(post_slug_aliases.alias_slug) = lower(?)
+     LIMIT 2`,
+  )
 
   if (!post) {
     throw new Error('文章不存在')
@@ -223,12 +318,14 @@ export async function updatePost(
   await ensureSchema(db)
 
   let oldCategory: string | null = null
-  if (data.category !== undefined) {
+  let oldSlug: string | null = null
+  if (data.category !== undefined || data.slug !== undefined) {
     const post = await db
-      .prepare('SELECT category, deleted_at FROM posts WHERE id = ?')
+      .prepare('SELECT slug, category, deleted_at FROM posts WHERE id = ?')
       .bind(id)
       .first<PostCategoryRow>()
     oldCategory = post?.category || null
+    oldSlug = post?.slug || null
   }
 
   const updates: string[] = []
@@ -298,9 +395,13 @@ export async function updatePost(
     .bind(...values)
     .run()
 
+  if (data.slug !== undefined) {
+    await rememberPostSlugAlias(db, id, oldSlug, data.slug)
+  }
+
   if (data.category !== undefined && oldCategory !== null && oldCategory !== data.category) {
     await db
-      .prepare('UPDATE categories SET post_count = post_count - 1 WHERE name = ?')
+      .prepare('UPDATE categories SET post_count = MAX(post_count - 1, 0) WHERE name = ?')
       .bind(oldCategory)
       .run()
     await db
@@ -312,24 +413,50 @@ export async function updatePost(
 
 // 增加浏览量
 export async function incrementViewCount(db: Database, slug: string): Promise<void> {
+  await ensureSchema(db)
+
+  const post = await getSinglePostBySlug<{ id: number }>(
+    db,
+    slug,
+    'SELECT id FROM posts WHERE slug = ?',
+    'SELECT id FROM posts WHERE lower(slug) = lower(?) LIMIT 2',
+    `SELECT posts.id
+     FROM posts
+     JOIN post_slug_aliases ON post_slug_aliases.post_id = posts.id
+     WHERE lower(post_slug_aliases.alias_slug) = lower(?)
+     LIMIT 2`,
+  )
+  if (!post) return
+
   await db
-    .prepare('UPDATE posts SET view_count = view_count + 1 WHERE slug = ?')
-    .bind(slug)
+    .prepare('UPDATE posts SET view_count = view_count + 1 WHERE id = ?')
+    .bind(post.id)
     .run()
 }
 
 // 删除文章
 export async function deletePost(db: Database, slug: string): Promise<void> {
-  const post = await db
-    .prepare('SELECT category FROM posts WHERE slug = ?')
-    .bind(slug)
-    .first<PostCategoryRow>()
+  await ensureSchema(db)
 
-  await db.prepare('DELETE FROM posts WHERE slug = ?').bind(slug).run()
+  const post = await getSinglePostBySlug<PostCategoryRow>(
+    db,
+    slug,
+    'SELECT id, slug, category FROM posts WHERE slug = ?',
+    'SELECT id, slug, category FROM posts WHERE lower(slug) = lower(?) LIMIT 2',
+    `SELECT posts.id, posts.slug, posts.category
+     FROM posts
+     JOIN post_slug_aliases ON post_slug_aliases.post_id = posts.id
+     WHERE lower(post_slug_aliases.alias_slug) = lower(?)
+     LIMIT 2`,
+  )
+  if (!post?.id) return
+
+  await db.prepare('DELETE FROM post_slug_aliases WHERE post_id = ?').bind(post.id).run()
+  await db.prepare('DELETE FROM posts WHERE id = ?').bind(post.id).run()
 
   if (post?.category) {
     await db
-      .prepare('UPDATE categories SET post_count = post_count - 1 WHERE name = ?')
+      .prepare('UPDATE categories SET post_count = MAX(post_count - 1, 0) WHERE name = ?')
       .bind(post.category)
       .run()
   }
@@ -339,6 +466,8 @@ export async function deletePost(db: Database, slug: string): Promise<void> {
 export async function getStats(
   db: Database,
 ): Promise<{ total_posts: number; total_views: number }> {
+  await ensureSchema(db)
+
   const result = await db
     .prepare('SELECT COUNT(*) as total_posts, COALESCE(SUM(view_count), 0) as total_views FROM posts WHERE deleted_at IS NULL')
     .first<StatsRow>()
@@ -378,6 +507,8 @@ export async function getPostsCount(
 
 // 根据分类获取文章数
 export async function getPostsCountByCategory(db: Database, category: string): Promise<number> {
+  await ensureSchema(db)
+
   const result = await db
     .prepare(
       `SELECT COUNT(*) as count
@@ -400,6 +531,8 @@ export async function getPostsByCategory(
   limit = 50,
   offset = 0,
 ): Promise<PostWithTags[]> {
+  await ensureSchema(db)
+
   const { results } = await db
     .prepare(
       `SELECT id, slug, title, description, category, tags, status, password, is_pinned, is_hidden, deleted_at, published_at, view_count
@@ -420,21 +553,47 @@ export async function getPostsByCategory(
 
 // 恢复已删除的文章（软删除恢复）
 export async function restorePost(db: Database, slug: string): Promise<void> {
-  await db.prepare("UPDATE posts SET status = 'draft', deleted_at = NULL WHERE slug = ?").bind(slug).run()
+  await ensureSchema(db)
+
+  const post = await getSinglePostBySlug<{ id: number }>(
+    db,
+    slug,
+    'SELECT id FROM posts WHERE slug = ?',
+    'SELECT id FROM posts WHERE lower(slug) = lower(?) LIMIT 2',
+    `SELECT posts.id
+     FROM posts
+     JOIN post_slug_aliases ON post_slug_aliases.post_id = posts.id
+     WHERE lower(post_slug_aliases.alias_slug) = lower(?)
+     LIMIT 2`,
+  )
+  if (!post) return
+
+  await db.prepare("UPDATE posts SET status = 'draft', deleted_at = NULL WHERE id = ?").bind(post.id).run()
 }
 
 // 永久删除文章（硬删除）
 export async function permanentlyDeletePost(db: Database, slug: string): Promise<void> {
-  const post = await db
-    .prepare('SELECT category FROM posts WHERE slug = ?')
-    .bind(slug)
-    .first<PostCategoryRow>()
+  await ensureSchema(db)
 
-  await db.prepare('DELETE FROM posts WHERE slug = ?').bind(slug).run()
+  const post = await getSinglePostBySlug<PostCategoryRow>(
+    db,
+    slug,
+    'SELECT id, slug, category FROM posts WHERE slug = ?',
+    'SELECT id, slug, category FROM posts WHERE lower(slug) = lower(?) LIMIT 2',
+    `SELECT posts.id, posts.slug, posts.category
+     FROM posts
+     JOIN post_slug_aliases ON post_slug_aliases.post_id = posts.id
+     WHERE lower(post_slug_aliases.alias_slug) = lower(?)
+     LIMIT 2`,
+  )
+  if (!post?.id) return
+
+  await db.prepare('DELETE FROM post_slug_aliases WHERE post_id = ?').bind(post.id).run()
+  await db.prepare('DELETE FROM posts WHERE id = ?').bind(post.id).run()
 
   if (post?.category) {
     await db
-      .prepare('UPDATE categories SET post_count = post_count - 1 WHERE name = ?')
+      .prepare('UPDATE categories SET post_count = MAX(post_count - 1, 0) WHERE name = ?')
       .bind(post.category)
       .run()
   }

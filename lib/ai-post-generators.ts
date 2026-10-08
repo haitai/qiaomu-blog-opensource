@@ -18,6 +18,10 @@ import {
   resolveAiProfileConfig,
 } from '@/lib/ai-provider-profiles'
 import {
+  isAnthropicCompatibleConfig,
+  runAnthropicCompatibleText,
+} from '@/lib/anthropic-compatible'
+import {
   DEFAULT_IMAGE_WORKERS_MODEL,
   DEFAULT_TEXT_WORKERS_MODEL,
   WORKERS_AI_IMAGE_MODEL_SUGGESTIONS,
@@ -58,6 +62,7 @@ import type {
   GeneratePostCoverInput,
   GeneratePostMetadataInput,
 } from '@/lib/ai-post-generator/types'
+import { upsertMediaAsset } from '@/lib/repositories/media-assets'
 
 export type {
   AiPostGeneratorProviderMode,
@@ -87,12 +92,68 @@ type TextRuntime =
       apiKey: string
       baseURL: string
       model: string
+      provider: string
+      providerName: string
+      providerType: string
       temperature: number
       maxTokens: number
     }
 
+type ImageProfileConfig = NonNullable<Awaited<ReturnType<typeof resolveAiImageProfileConfig>>>
+
+function getErrorMessage(error: unknown): string {
+  return error instanceof Error ? error.message : String(error || '')
+}
+
+function isTransientImageProviderError(error: unknown): boolean {
+  const message = getErrorMessage(error).toLowerCase()
+  return [
+    'error code: 525',
+    'http 525',
+    'cloudflare',
+    'ssl handshake',
+    'handshake failed',
+    'timeout',
+    'fetch failed',
+    'network',
+    'econnreset',
+    'etimedout',
+    '502',
+    '503',
+    '504',
+  ].some((pattern) => message.includes(pattern))
+}
+
+function generateCoverWithProfile(
+  generator: AiPostGeneratorRow,
+  input: GeneratePostCoverInput,
+  profile: ImageProfileConfig,
+): Promise<GeneratedEditorImage> {
+  return generateEditorImage({
+    action: 'custom',
+    actionPrompt: generator.prompt,
+    actionLabel: generator.label,
+    userPrompt: buildContextBlock(input, 'cover'),
+    articleTitle: input.title,
+    contextText: input.content,
+    aspectRatio: generator.aspect_ratio,
+    resolution: generator.resolution,
+    profileId: profile.id,
+    source: 'cover_generator',
+    db: input.db,
+    env: input.env as Record<string, string | undefined> | undefined,
+    images: input.images,
+  })
+}
+
 function readFlag(value: unknown): boolean {
   return typeof value === 'string' && ['1', 'true', 'yes', 'on'].includes(value.trim().toLowerCase())
+}
+
+async function toUint8Array(input: ReadableStream | Uint8Array) {
+  if (input instanceof Uint8Array) return input
+  const response = new Response(input)
+  return new Uint8Array(await response.arrayBuffer())
 }
 
 async function runTextGenerator(
@@ -152,6 +213,40 @@ async function runTextGenerator(
     return {
       text: extractWorkersAiText(result),
       reasoningText: primary.reasoning,
+    }
+  }
+
+  if (isAnthropicCompatibleConfig({
+    provider: config.provider,
+    providerName: config.providerName,
+    providerType: config.providerType,
+  })) {
+    const primary = await runAnthropicCompatibleText({
+      apiKey: config.apiKey,
+      baseURL: config.baseURL,
+      model: config.model,
+      messages,
+      temperature: config.temperature,
+      maxTokens: config.maxTokens,
+    })
+    if (primary.text) {
+      return {
+        text: primary.text,
+        reasoningText: primary.reasoningText,
+      }
+    }
+
+    const retry = await runAnthropicCompatibleText({
+      apiKey: config.apiKey,
+      baseURL: config.baseURL,
+      model: config.model,
+      messages: retryMessages,
+      temperature: config.temperature,
+      maxTokens: Math.min(Math.max(config.maxTokens * 3, 512), 2048),
+    })
+    return {
+      text: retry.text,
+      reasoningText: retry.reasoningText || primary.reasoningText,
     }
   }
 
@@ -364,6 +459,9 @@ async function resolveTextRuntime(
           apiKey: selectedWorkersProfile.api_key,
           baseURL: selectedWorkersProfile.base_url,
           model: generator.workers_model || selectedWorkersProfile.model || DEFAULT_TEXT_WORKERS_MODEL,
+          provider: selectedWorkersProfile.provider,
+          providerName: selectedWorkersProfile.provider_name,
+          providerType: selectedWorkersProfile.provider_type,
           temperature: clampTemperature(generator.temperature),
           maxTokens: clampMaxTokens(generator.max_tokens),
         }
@@ -393,6 +491,9 @@ async function resolveTextRuntime(
     apiKey: profile.api_key,
     baseURL: profile.base_url,
     model: profile.model,
+    provider: profile.provider,
+    providerName: profile.provider_name,
+    providerType: profile.provider_type,
     temperature: clampTemperature(generator.temperature || profile.temperature),
     maxTokens: clampMaxTokens(generator.max_tokens || profile.max_tokens),
   }
@@ -507,12 +608,13 @@ async function generateWorkersAiCover(
   }
 
   const asset = await extractWorkersAiImageAsset(rawResult, model)
+  const imageBytes = await toUint8Array(asset.data)
   const alt = (input.title || '文章封面').trim() || '文章封面'
   const { yyyy, mm } = getNowPrefix()
   const baseName = sanitizeFilename(alt).slice(0, 48)
   const key = `image/${yyyy}/${mm}/ai-cover-${nanoid(10)}-${baseName}.${asset.extension}`
 
-  await input.images.put(key, asset.data, {
+  await input.images.put(key, imageBytes, {
     httpMetadata: {
       contentType: asset.contentType,
       cacheControl: 'public, max-age=31536000, immutable',
@@ -525,10 +627,26 @@ async function generateWorkersAiCover(
 
   const encodedKey = key.split('/').map(encodeURIComponent).join('/')
   const variants = buildAssetUrls(encodedKey, readFlag(input.env?.ENABLE_CF_IMAGE_PIPELINE))
+  const url = `/api/images/${encodedKey}`
+  const mediaAsset = await upsertMediaAsset(input.db, {
+    source: 'cover_generator',
+    r2Key: key,
+    url,
+    variants,
+    mimeType: asset.contentType,
+    sizeBytes: imageBytes.length,
+    alt,
+    prompt,
+    revisedPrompt: prompt,
+    model,
+    providerName: 'Workers AI',
+    aspectRatio: generator.aspect_ratio,
+    resolution: generator.resolution,
+  })
 
   return {
     key,
-    url: `/api/images/${encodedKey}`,
+    url,
     variants,
     prompt,
     revisedPrompt: prompt,
@@ -539,6 +657,9 @@ async function generateWorkersAiCover(
     size: `${width}x${height}`,
     profileName: 'Workers AI',
     model,
+    mimeType: asset.contentType,
+    sizeBytes: imageBytes.length,
+    assetId: mediaAsset.id,
   } satisfies GeneratedEditorImage
 }
 
@@ -566,20 +687,25 @@ export async function generatePostCover(
       throw new Error('请先在后台配置可用的图片模型')
     }
 
-    image = await generateEditorImage({
-      action: 'custom',
-      actionPrompt: generator.prompt,
-      actionLabel: generator.label,
-      userPrompt: buildContextBlock(input, 'cover'),
-      articleTitle: input.title,
-      contextText: input.content,
-      aspectRatio: generator.aspect_ratio,
-      resolution: generator.resolution,
-      profileId: profile.id,
-      db: input.db,
-      env: input.env as Record<string, string | undefined> | undefined,
-      images: input.images,
-    })
+    try {
+      image = await generateCoverWithProfile(generator, input, profile)
+    } catch (error) {
+      const fallbackProfile = isTransientImageProviderError(error)
+        ? await resolveAiImageProfileConfig(input.db, secret)
+        : null
+
+      if (!fallbackProfile || fallbackProfile.id === profile.id) {
+        throw error
+      }
+
+      console.warn('[ai-post-cover] Primary image profile failed; retrying with default profile', {
+        profileId: profile.id,
+        fallbackProfileId: fallbackProfile.id,
+        error: getErrorMessage(error),
+      })
+
+      image = await generateCoverWithProfile(generator, input, fallbackProfile)
+    }
   }
 
   return { generator, image }

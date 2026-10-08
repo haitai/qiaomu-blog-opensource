@@ -5,6 +5,7 @@ import type { SiteCategoryLink, SiteNavLink } from '@/lib/site'
 import { getSiteHeaderData } from '@/lib/site'
 import { HomeClient } from '@/components/HomeClient'
 import { getSiteUrl } from '@/lib/site-config'
+import { getCachedPublicData } from '@/lib/public-site-cache'
 
 const PAGE_SIZE = 25
 const BASE_URL = getSiteUrl()
@@ -35,11 +36,21 @@ export default async function Home({
   try {
     const env = await getAppCloudflareEnv()
     if (env?.DB) {
-      const headerData = await getSiteHeaderData(env.DB)
-      ;[posts, totalCount] = await Promise.all([
-        getPosts(env.DB, PAGE_SIZE, (currentPage - 1) * PAGE_SIZE),
-        getPostsCount(env.DB),
-      ])
+      const db = env.DB
+      const { headerData, nextPosts, nextTotalCount } = await getCachedPublicData(
+        env,
+        `home:page:${currentPage}`,
+        async () => {
+          const [headerData, nextPosts, nextTotalCount] = await Promise.all([
+            getSiteHeaderData(db),
+            getPosts(db, PAGE_SIZE, (currentPage - 1) * PAGE_SIZE),
+            getPostsCount(db),
+          ])
+          return { headerData, nextPosts, nextTotalCount }
+        },
+      )
+      posts = nextPosts
+      totalCount = nextTotalCount
       navLinks = headerData.navLinks
       categories = headerData.categories
       defaultTheme = headerData.defaultTheme

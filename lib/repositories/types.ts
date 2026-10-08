@@ -42,6 +42,8 @@ export interface SettingRow {
 }
 
 export interface PostCategoryRow {
+  id?: number
+  slug?: string
   category: string | null
   deleted_at?: number | null
 }
@@ -54,6 +56,65 @@ export interface PostAiSnapshotRow {
   description: string | null
   tags: string | null
   deleted_at: number | null
+}
+
+export interface MediaAssetRow {
+  id: number
+  type: string
+  source: string
+  r2_key: string | null
+  url: string
+  variants_json: string | null
+  mime_type: string | null
+  size_bytes: number | null
+  width: number | null
+  height: number | null
+  alt: string | null
+  prompt: string | null
+  revised_prompt: string | null
+  model: string | null
+  provider_name: string | null
+  aspect_ratio: string | null
+  resolution: string | null
+  created_at: number
+  updated_at: number
+  link_count?: number
+  current_post_link_count?: number
+  last_linked_at?: number | null
+}
+
+export interface AiResearchResourceRow {
+  id: number
+  source_type: string
+  url: string
+  canonical_url: string
+  platform: string
+  provider: string
+  status: string
+  title: string
+  summary: string
+  excerpt: string
+  content_text: string
+  content_r2_key: string | null
+  content_hash: string
+  error_message: string
+  created_at: number
+  updated_at: number
+}
+
+export interface AiResearchJobRow {
+  id: number
+  resource_id: number
+  provider: string
+  provider_task_id: string | null
+  provider_note_id: string | null
+  status: string
+  raw_status: string
+  error_message: string
+  last_polled_at: number | null
+  next_poll_at: number | null
+  created_at: number
+  updated_at: number
 }
 
 export function isPubliclyAccessiblePost(

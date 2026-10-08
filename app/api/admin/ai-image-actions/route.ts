@@ -58,7 +58,7 @@ export async function POST(req: NextRequest) {
     sort_order?: number
   }
 
-  if (!body.action_key || !body.label || !body.description || !body.prompt) {
+  if (!body.action_key || !body.label || !body.prompt) {
     return NextResponse.json({ error: '缺少必填字段' }, { status: 400 })
   }
 
@@ -82,7 +82,7 @@ export async function POST(req: NextRequest) {
     `).bind(
       body.action_key,
       body.label,
-      body.description,
+      body.description || '',
       body.prompt,
       aspectRatio,
       resolution,

@@ -16,6 +16,10 @@ import {
   shouldRetryAssistantPayload,
 } from '@/lib/ai-post-generator/parsers'
 import { buildAutoDescription } from '@/lib/post-utils'
+import {
+  isAnthropicCompatibleConfig,
+  runAnthropicCompatibleText,
+} from '@/lib/anthropic-compatible'
 
 const DEFAULT_EXTERNAL_BASE_URL = 'https://api.siliconflow.cn/v1'
 const DEFAULT_EXTERNAL_MODEL = 'Qwen/Qwen2.5-7B-Instruct'
@@ -45,6 +49,9 @@ type ResolvedConfig =
       apiKey: string
       baseURL: string
       model: string
+      provider: string
+      providerName: string
+      providerType: string
       temperature: number
       maxTokens: number
     }
@@ -90,6 +97,9 @@ function resolveEnv(env?: AIEnv): ResolvedConfig {
       apiKey: externalApiKey,
       baseURL: env?.AI_BASE_URL || process.env.AI_BASE_URL || DEFAULT_EXTERNAL_BASE_URL,
       model: env?.AI_MODEL || process.env.AI_MODEL || DEFAULT_EXTERNAL_MODEL,
+      provider: 'env',
+      providerName: '环境变量',
+      providerType: 'openai_compatible',
       temperature: 0.7,
       maxTokens: 2000,
     }
@@ -184,32 +194,150 @@ function createTextStream(output: string): ReadableStream<Uint8Array> {
   })
 }
 
-async function collectStreamText(
-  stream: AsyncIterable<{
-    choices?: Array<{
-      delta?: {
-        content?: string | null
-        reasoning_content?: string | null
+interface StreamChunkChoice {
+  delta?: {
+    content?: unknown
+    reasoning_content?: unknown
+    reasoning?: unknown
+  }
+  finish_reason?: string | null
+  stop_reason?: string | null
+}
+
+interface CompletionStreamChunk {
+  choices?: StreamChunkChoice[]
+}
+
+function createAbortError() {
+  const error = new Error('The operation was aborted')
+  error.name = 'AbortError'
+  return error
+}
+
+function isAbortError(error: unknown) {
+  return error instanceof Error && error.name === 'AbortError'
+}
+
+function throwIfAborted(signal?: AbortSignal) {
+  if (signal?.aborted) throw createAbortError()
+}
+
+function coerceStreamText(value: unknown): string {
+  if (typeof value === 'string') return value
+  if (Array.isArray(value)) {
+    return value
+      .map((item) => coerceStreamText(item))
+      .join('')
+  }
+  if (value && typeof value === 'object') {
+    const record = value as Record<string, unknown>
+    const nested = record.text ?? record.content ?? record.value ?? record.output_text
+    if (nested !== undefined) {
+      return coerceStreamText(nested)
+    }
+  }
+  return ''
+}
+
+function isReadableStreamLike(value: unknown): value is ReadableStream<Uint8Array> {
+  return Boolean(
+    value
+    && typeof value === 'object'
+    && 'getReader' in value
+    && typeof (value as ReadableStream<Uint8Array>).getReader === 'function',
+  )
+}
+
+async function* parseSseJsonStream(
+  stream: ReadableStream<Uint8Array>,
+  signal?: AbortSignal,
+): AsyncGenerator<CompletionStreamChunk> {
+  const reader = stream.getReader()
+  const decoder = new TextDecoder()
+  let buffer = ''
+
+  try {
+    while (true) {
+      throwIfAborted(signal)
+      const { done, value } = await reader.read()
+      if (done) break
+      buffer += decoder.decode(value, { stream: true })
+      buffer = buffer.replace(/\r\n/g, '\n')
+
+      let boundaryIndex = buffer.indexOf('\n\n')
+      while (boundaryIndex >= 0) {
+        const rawEvent = buffer.slice(0, boundaryIndex)
+        buffer = buffer.slice(boundaryIndex + 2)
+
+        const dataPayload = rawEvent
+          .split('\n')
+          .map((line) => line.trim())
+          .filter((line) => line.startsWith('data:'))
+          .map((line) => line.slice(5).trim())
+          .join('\n')
+
+        if (dataPayload && dataPayload !== '[DONE]') {
+          try {
+            const parsed = JSON.parse(dataPayload) as CompletionStreamChunk
+            yield parsed
+          } catch {
+            // Ignore malformed SSE fragments and keep the stream alive.
+          }
+        }
+
+        boundaryIndex = buffer.indexOf('\n\n')
       }
-      finish_reason?: string | null
-    }>
-  }>,
+    }
+
+    buffer += decoder.decode()
+    const trailingPayload = buffer
+      .split('\n')
+      .map((line) => line.trim())
+      .filter((line) => line.startsWith('data:'))
+      .map((line) => line.slice(5).trim())
+      .join('\n')
+
+    if (trailingPayload && trailingPayload !== '[DONE]') {
+      try {
+        yield JSON.parse(trailingPayload) as CompletionStreamChunk
+      } catch {
+        // Ignore a malformed trailing fragment.
+      }
+    }
+  } finally {
+    reader.releaseLock()
+  }
+}
+
+async function pipeCompletionChunks(
+  stream: AsyncIterable<CompletionStreamChunk>,
+  controller: ReadableStreamDefaultController<Uint8Array>,
+  encoder: TextEncoder,
+  signal?: AbortSignal,
 ) {
   let content = ''
   let reasoning = ''
   let finishReason = ''
 
   for await (const chunk of stream) {
+    throwIfAborted(signal)
     const choice = chunk.choices?.[0]
     const delta = choice?.delta || {}
-    if (typeof delta.content === 'string') {
-      content += delta.content
+    const nextContent = coerceStreamText(delta.content)
+    const nextReasoning = coerceStreamText(delta.reasoning_content ?? delta.reasoning)
+
+    if (nextContent) {
+      content += nextContent
+      controller.enqueue(encoder.encode(nextContent))
     }
-    if (typeof delta.reasoning_content === 'string') {
-      reasoning += delta.reasoning_content
+    if (nextReasoning) {
+      reasoning += nextReasoning
     }
+
     if (choice?.finish_reason) {
       finishReason = choice.finish_reason
+    } else if (choice?.stop_reason) {
+      finishReason = choice.stop_reason
     }
   }
 
@@ -218,6 +346,54 @@ async function collectStreamText(
     reasoning: reasoning.trim(),
     finishReason,
   }
+}
+
+function createStreamingTextStream(
+  startPrimaryStream: (signal: AbortSignal) => Promise<AsyncIterable<CompletionStreamChunk>>,
+  startRetryStream: ((signal: AbortSignal) => Promise<AsyncIterable<CompletionStreamChunk>>) | null,
+  signal?: AbortSignal,
+) {
+  const upstreamAbortController = new AbortController()
+  const forwardAbort = () => upstreamAbortController.abort()
+  signal?.addEventListener('abort', forwardAbort)
+
+  return new ReadableStream<Uint8Array>({
+    async start(controller) {
+      const encoder = new TextEncoder()
+
+      try {
+        const primary = await pipeCompletionChunks(
+          await startPrimaryStream(upstreamAbortController.signal),
+          controller,
+          encoder,
+          upstreamAbortController.signal,
+        )
+
+        if (!primary.content && startRetryStream && shouldRetryAssistantPayload(primary)) {
+          await pipeCompletionChunks(
+            await startRetryStream(upstreamAbortController.signal),
+            controller,
+            encoder,
+            upstreamAbortController.signal,
+          )
+        }
+
+        controller.close()
+      } catch (error) {
+        if (upstreamAbortController.signal.aborted || isAbortError(error)) {
+          controller.close()
+          return
+        }
+        controller.error(error)
+      } finally {
+        signal?.removeEventListener('abort', forwardAbort)
+      }
+    },
+    cancel() {
+      upstreamAbortController.abort()
+      signal?.removeEventListener('abort', forwardAbort)
+    },
+  })
 }
 
 async function runWorkersAiText(
@@ -254,11 +430,14 @@ export async function resolveConfig(env?: AIEnv, db?: D1Database, profileId?: nu
 
       const selected = Number.isFinite(profileId) && Number(profileId) > 0
         ? await db.prepare(`
-            SELECT base_url, model, temperature, max_tokens, api_key_encrypted
+            SELECT provider, provider_name, provider_type, base_url, model, temperature, max_tokens, api_key_encrypted
             FROM ai_provider_profiles
             WHERE id = ?
             LIMIT 1
           `).bind(Number(profileId)).first<{
+            provider: string
+            provider_name: string
+            provider_type: string
             base_url: string
             model: string
             temperature: number
@@ -266,11 +445,14 @@ export async function resolveConfig(env?: AIEnv, db?: D1Database, profileId?: nu
             api_key_encrypted: string
           }>()
         : await db.prepare(`
-            SELECT base_url, model, temperature, max_tokens, api_key_encrypted
+            SELECT provider, provider_name, provider_type, base_url, model, temperature, max_tokens, api_key_encrypted
             FROM ai_provider_profiles
             ORDER BY is_default DESC, id ASC
             LIMIT 1
           `).first<{
+            provider: string
+            provider_name: string
+            provider_type: string
             base_url: string
             model: string
             temperature: number
@@ -286,6 +468,9 @@ export async function resolveConfig(env?: AIEnv, db?: D1Database, profileId?: nu
             apiKey: key,
             baseURL: normalizeBaseUrl(selected.base_url),
             model: selected.model,
+            provider: selected.provider || 'custom',
+            providerName: selected.provider_name || '',
+            providerType: selected.provider_type || 'openai_compatible',
             temperature: clampTemperature(Number(selected.temperature)),
             maxTokens: clampMaxTokens(Number(selected.max_tokens)),
           }
@@ -301,6 +486,9 @@ export async function resolveConfig(env?: AIEnv, db?: D1Database, profileId?: nu
         const cfg = JSON.parse(providerRow.value) as {
           base_url?: string
           model?: string
+          provider?: string
+          provider_name?: string
+          provider_type?: string
           temperature?: number
           max_tokens?: number
         }
@@ -311,6 +499,9 @@ export async function resolveConfig(env?: AIEnv, db?: D1Database, profileId?: nu
             apiKey: keyRow.value,
             baseURL: normalizeBaseUrl(cfg.base_url),
             model: cfg.model,
+            provider: cfg.provider || 'custom',
+            providerName: cfg.provider_name || '',
+            providerType: cfg.provider_type || 'openai_compatible',
             temperature: clampTemperature(Number(cfg.temperature)),
             maxTokens: clampMaxTokens(Number(cfg.max_tokens)),
           }
@@ -331,6 +522,7 @@ export interface TransformOptions {
   profileId?: number
   db?: D1Database
   env?: AIEnv
+  signal?: AbortSignal
 }
 
 /** 编辑器 AI 操作（支持动态 prompt + custom 自由输入） */
@@ -379,6 +571,37 @@ export async function transformEditorSelectionStream(
   ))
 
   if (config.strategy === 'workers-ai') {
+    const startWorkersAiStream = async (
+      nextMessages: Array<{ role: 'system' | 'user'; content: string }>,
+      nextMaxTokens: number,
+    ) => {
+      const result = await config.binding.run(config.model, {
+        messages: nextMessages,
+        max_tokens: nextMaxTokens,
+        temperature,
+        stream: true,
+      })
+
+      return isReadableStreamLike(result) ? result : null
+    }
+
+    const primaryStream = await startWorkersAiStream(messages, config.maxTokens)
+    if (primaryStream) {
+      return createStreamingTextStream(
+        async (signal) => parseSseJsonStream(primaryStream, signal),
+        async (signal) => {
+          const retryStream = await startWorkersAiStream(
+            retryMessages,
+            Math.min(Math.max(config.maxTokens * 3, 512), 2048),
+          )
+
+          if (!retryStream) throw new Error('Workers AI 未返回可读流')
+          return parseSseJsonStream(retryStream, signal)
+        },
+        options.signal,
+      )
+    }
+
     const primaryRaw = await config.binding.run(config.model, {
       messages,
       max_tokens: config.maxTokens,
@@ -409,9 +632,11 @@ export async function transformEditorSelectionStream(
     const runCompatRequest = async (
       nextMessages: Array<{ role: 'system' | 'user'; content: string }>,
       nextMaxTokens: number,
+      signal?: AbortSignal,
     ) => {
       const response = await fetch(`${normalizeBaseUrl(config.baseURL)}/chat/completions`, {
         method: 'POST',
+        signal,
         headers: {
           Authorization: `Bearer ${config.apiKey}`,
           'Content-Type': 'application/json',
@@ -421,65 +646,78 @@ export async function transformEditorSelectionStream(
           messages: nextMessages,
           temperature,
           max_tokens: nextMaxTokens,
+          stream: true,
         }),
       })
 
-      const rawBody = await response.text().catch(() => '')
       if (!response.ok) {
+        const rawBody = await response.text().catch(() => '')
         throw new Error(rawBody.trim() || `AI 请求失败：HTTP ${response.status}`)
       }
 
-      return rawBody ? JSON.parse(rawBody) : null
+      if (!response.body) throw new Error('AI 未返回可读流')
+      return parseSseJsonStream(response.body, signal)
     }
 
-    const primaryPayload = await runCompatRequest(messages, config.maxTokens)
-    const primary = getWorkersAiAssistantPayload(primaryPayload)
-    if (primary.content) {
-      return createTextStream(primary.content)
-    }
-
-    if (shouldRetryAssistantPayload(primary)) {
-      const retryPayload = await runCompatRequest(
+    return createStreamingTextStream(
+      (signal) => runCompatRequest(messages, config.maxTokens, signal),
+      (signal) => runCompatRequest(
         retryMessages,
         Math.min(Math.max(config.maxTokens * 3, 512), 2048),
-      )
-      const retried = getWorkersAiAssistantPayload(retryPayload)
-      if (retried.content) {
-        return createTextStream(retried.content)
-      }
+        signal,
+      ),
+      options.signal,
+    )
+  }
+
+  if (isAnthropicCompatibleConfig({
+    provider: config.provider,
+    providerName: config.providerName,
+    providerType: config.providerType,
+  })) {
+    const primary = await runAnthropicCompatibleText({
+      apiKey: config.apiKey,
+      baseURL: config.baseURL,
+      model: config.model,
+      messages,
+      temperature,
+      maxTokens: config.maxTokens,
+      signal: options.signal,
+    })
+    if (primary.text) {
+      return createTextStream(primary.text)
     }
 
-    return createTextStream(extractWorkersAiText(primaryPayload))
+    const retried = await runAnthropicCompatibleText({
+      apiKey: config.apiKey,
+      baseURL: config.baseURL,
+      model: config.model,
+      messages: retryMessages,
+      temperature,
+      maxTokens: Math.min(Math.max(config.maxTokens * 3, 512), 2048),
+      signal: options.signal,
+    })
+    return createTextStream(retried.text)
   }
 
   const client = getClientFromConfig(config)
-  const primaryStream = await client.chat.completions.create({
-    model: config.model,
-    messages,
-    temperature,
-    max_tokens: config.maxTokens,
-    stream: true,
-  })
-  const primary = await collectStreamText(primaryStream)
-  if (primary.content) {
-    return createTextStream(primary.content)
-  }
-
-  if (shouldRetryAssistantPayload(primary)) {
-    const retryStream = await client.chat.completions.create({
+  return createStreamingTextStream(
+    (signal) => client.chat.completions.create({
+      model: config.model,
+      messages,
+      temperature,
+      max_tokens: config.maxTokens,
+      stream: true,
+    }, { signal }),
+    (signal) => client.chat.completions.create({
       model: config.model,
       messages: retryMessages,
       temperature,
       max_tokens: Math.min(Math.max(config.maxTokens * 3, 512), 2048),
       stream: true,
-    })
-    const retried = await collectStreamText(retryStream)
-    if (retried.content) {
-      return createTextStream(retried.content)
-    }
-  }
-
-  return createTextStream('')
+    }, { signal }),
+    options.signal,
+  )
 }
 
 export async function processPost(
@@ -527,6 +765,20 @@ export async function processPost(
           messages,
           { type: 'json_object' },
         )
+      } else if (isAnthropicCompatibleConfig({
+        provider: resolved.provider,
+        providerName: resolved.providerName,
+        providerType: resolved.providerType,
+      })) {
+        const response = await runAnthropicCompatibleText({
+          apiKey: resolved.apiKey,
+          baseURL: resolved.baseURL,
+          model: resolved.model,
+          messages,
+          temperature: 0.5,
+          maxTokens: Math.min(resolved.maxTokens, 2000),
+        })
+        resultText = response.text
       } else {
         const client = getClientFromConfig(resolved)
         const response = await client.chat.completions.create(

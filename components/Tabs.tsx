@@ -21,13 +21,13 @@ export function Tabs({ tabs, defaultTab }: TabsProps) {
   return (
     <div>
       {/* Tab 导航 */}
-      <div className="border-b border-[var(--editor-line)] mb-6">
-        <div className="flex gap-1">
+      <div className="border-b border-[var(--editor-line)] mb-6 overflow-x-auto">
+        <div className="flex min-w-max gap-1">
           {tabs.map(tab => (
             <button
               key={tab.id}
               onClick={() => setActiveTab(tab.id)}
-              className={`px-4 py-2.5 text-sm font-medium transition-colors relative ${
+              className={`px-4 py-2.5 text-sm font-medium transition-colors relative whitespace-nowrap ${
                 activeTab === tab.id
                   ? 'text-[var(--editor-accent)]'
                   : 'text-[var(--editor-muted)] hover:text-[var(--editor-ink)]'

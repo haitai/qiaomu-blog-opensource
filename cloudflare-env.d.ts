@@ -67,6 +67,9 @@ declare interface CloudflareEnv {
   ADMIN_TOKEN_SALT?: string
   AI_CONFIG_ENCRYPTION_SECRET?: string
   NEXT_PUBLIC_SITE_URL?: string
+  NEXT_PUBLIC_UMAMI_WEBSITE_ID?: string
+  NEXT_PUBLIC_UMAMI_SCRIPT_URL?: string
+  NEXT_PUBLIC_UMAMI_DOMAINS?: string
   AI_API_KEY?: string
   AI_BASE_URL?: string
   AI_MODEL?: string
@@ -77,4 +80,13 @@ declare interface CloudflareEnv {
   ENABLE_WORKERS_AI?: string
   ENABLE_VECTOR_SEARCH?: string
   ENABLE_CF_IMAGE_PIPELINE?: string
+  ENABLE_AI_WEB_RESEARCH?: string
+  ENABLE_AI_TRANSCRIPT_RESEARCH?: string
+  PIPELLM_API_KEY?: string
+  GETNOTE_API_KEY?: string
+  GETNOTE_CLIENT_ID?: string
+  GETNOTE_WEB_TOKEN?: string
+  GETNOTE_WEB_TOKEN_EXPIRES_AT?: string
+  GETNOTE_WEB_REFRESH_TOKEN?: string
+  GETNOTE_WEB_REFRESH_TOKEN_EXPIRES_AT?: string
 }

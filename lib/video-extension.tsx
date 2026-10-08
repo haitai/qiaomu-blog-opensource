@@ -1,6 +1,7 @@
 import { Node, mergeAttributes } from '@tiptap/core'
 import { ReactNodeViewRenderer, NodeViewWrapper, type NodeViewProps } from '@tiptap/react'
-import { useRef, useState } from 'react'
+import { ExternalLink, Play, VideoIcon, X } from 'lucide-react'
+import { useState } from 'react'
 
 declare module '@tiptap/core' {
   interface Commands<ReturnType> {
@@ -15,51 +16,129 @@ interface VideoNodeAttrs {
   title?: string
 }
 
+function getVideoLabel(src: string, title?: string) {
+  const trimmedTitle = title?.trim()
+  if (trimmedTitle) return trimmedTitle
+
+  const fallback = src.split('#')[0]?.split('?')[0]?.split('/').filter(Boolean).at(-1)
+  if (!fallback) return '视频'
+
+  try {
+    return decodeURIComponent(fallback)
+  } catch {
+    return fallback
+  }
+}
+
+function getVideoMeta(src: string) {
+  try {
+    const url = new URL(src, window.location.origin)
+    if (url.origin === window.location.origin) return url.pathname
+    return url.hostname
+  } catch {
+    return src
+  }
+}
+
 function VideoComponent({ node }: NodeViewProps) {
   const { src, title } = node.attrs
-  const videoRef = useRef<HTMLVideoElement>(null)
-  const [isLoading, setIsLoading] = useState(true)
-  const [hasError, setHasError] = useState(false)
+  const [previewState, setPreviewState] = useState({
+    src,
+    open: false,
+    error: false,
+  })
+  const label = getVideoLabel(src, title)
+  const meta = getVideoMeta(src)
+  const previewOpen = previewState.src === src && previewState.open
+  const previewError = previewState.src === src && previewState.error
+
+  const openPreview = () => {
+    setPreviewState({ src, open: true, error: false })
+  }
+
+  const closePreview = () => {
+    setPreviewState({ src, open: false, error: false })
+  }
 
   return (
-    <NodeViewWrapper className="video-wrapper">
-      <div className="my-4 relative">
-        {isLoading && !hasError && (
-          <div className="absolute inset-0 flex items-center justify-center bg-[var(--editor-panel)] rounded-lg">
-            <span className="text-sm text-[var(--editor-muted)]">加载视频中...</span>
-          </div>
-        )}
-        {hasError ? (
-          <div className="p-4 bg-red-50 border border-red-200 rounded-lg text-center">
-            <p className="text-sm text-red-600">视频加载失败</p>
-            <p className="text-xs text-red-500 mt-1">{src}</p>
+    <NodeViewWrapper data-type="video" className="video-wrapper video-node-view">
+      <div className="editor-video-card" contentEditable={false}>
+        {previewOpen ? (
+          <div className="editor-video-preview">
+            <div className="editor-video-preview-bar">
+              <div className="editor-video-title">
+                <VideoIcon className="h-4 w-4" aria-hidden />
+                <span>{label}</span>
+              </div>
+              <button
+                type="button"
+                className="editor-video-icon-button"
+                title="收起预览"
+                aria-label="收起预览"
+                onMouseDown={(event) => event.preventDefault()}
+                onClick={closePreview}
+              >
+                <X className="h-4 w-4" aria-hidden />
+              </button>
+            </div>
+            {previewError ? (
+              <div className="editor-video-error">
+                <span>视频加载失败</span>
+                <a href={src} target="_blank" rel="noopener noreferrer">
+                  打开链接
+                </a>
+              </div>
+            ) : (
+              <video
+                src={src}
+                controls
+                playsInline
+                webkit-playsinline="true"
+                x5-playsinline="true"
+                x5-video-player-type="h5"
+                x-webkit-airplay="true"
+                className="editor-video-player"
+                preload="none"
+                onError={() => setPreviewState({ src, open: true, error: true })}
+              >
+                您的浏览器不支持视频播放
+              </video>
+            )}
           </div>
         ) : (
-          <video
-            ref={videoRef}
-            src={src}
-            controls
-            playsInline
-            webkit-playsinline="true"
-            x5-playsinline="true"
-            x5-video-player-type="h5"
-            x-webkit-airplay="true"
-            className="w-full max-w-full rounded-lg shadow-sm"
-            style={{ maxHeight: '600px' }}
-            preload="metadata"
-            onLoadedData={() => setIsLoading(false)}
-            onError={() => {
-              setIsLoading(false)
-              setHasError(true)
-            }}
-          >
-            您的浏览器不支持视频播放
-          </video>
-        )}
-        {title && !hasError && (
-          <p className="mt-2 text-sm text-[var(--editor-muted)] text-center">
-            {title}
-          </p>
+          <div className="editor-video-placeholder">
+            <div className="editor-video-thumb" aria-hidden>
+              <VideoIcon className="h-5 w-5" />
+            </div>
+            <div className="editor-video-copy">
+              <div className="editor-video-title">{label}</div>
+              <div className="editor-video-meta">{meta}</div>
+            </div>
+            <div className="editor-video-actions">
+              <button
+                type="button"
+                className="editor-video-action"
+                title="预览视频"
+                aria-label="预览视频"
+                onMouseDown={(event) => event.preventDefault()}
+                onClick={openPreview}
+              >
+                <Play className="h-4 w-4" aria-hidden />
+                <span>预览</span>
+              </button>
+              <a
+                className="editor-video-icon-button"
+                href={src}
+                target="_blank"
+                rel="noopener noreferrer"
+                title="新窗口打开"
+                aria-label="新窗口打开"
+                onMouseDown={(event) => event.preventDefault()}
+              >
+                <ExternalLink className="h-4 w-4" aria-hidden />
+              </a>
+            </div>
+          </div>
         )}
       </div>
     </NodeViewWrapper>

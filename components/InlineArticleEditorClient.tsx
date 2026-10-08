@@ -11,6 +11,7 @@ const InlineArticleEditor = dynamic(
 )
 
 export function InlineArticleEditorClient(props: {
+  postId?: number | null
   slug: string
   title: string
   html: string

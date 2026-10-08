@@ -1,0 +1,531 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>乔木简阅 · K3 重设计方向样机</title>
+<style>
+  :root { color-scheme: light; --shell-bg:#f2f2ef; --shell-ink:#1d1d1a; --shell-muted:#6f6e68; --shell-line:#dcdcd5; }
+  * { box-sizing: border-box; }
+  html, body { margin: 0; padding: 0; background: var(--shell-bg); }
+  body {
+    color: var(--shell-ink);
+    font-family: -apple-system, BlinkMacSystemFont, "PingFang SC", "Hiragino Sans GB", "Microsoft YaHei", "Noto Sans CJK SC", sans-serif;
+  }
+  button, input { font: inherit; }
+
+  /* ---------- 说明区 ---------- */
+  .brief {
+    max-width: 1240px;
+    margin: 0 auto;
+    padding: 36px 28px 8px;
+  }
+  .brief-eyebrow {
+    margin: 0 0 10px;
+    color: #0f7285;
+    font-size: 12px;
+    font-weight: 600;
+    letter-spacing: .14em;
+  }
+  .brief h1 {
+    margin: 0;
+    font-size: clamp(26px, 3.4vw, 38px);
+    font-weight: 600;
+    line-height: 1.2;
+    letter-spacing: 0;
+  }
+  .brief .note {
+    margin: 12px 0 0;
+    color: var(--shell-muted);
+    font-size: 14px;
+    line-height: 1.7;
+    max-width: 640px;
+  }
+  .dials {
+    display: grid;
+    grid-template-columns: repeat(3, minmax(0, 1fr));
+    gap: 14px;
+    max-width: 1240px;
+    margin: 22px auto 30px;
+    padding: 0 28px;
+  }
+  .dial {
+    display: grid;
+    gap: 8px;
+    padding: 12px 16px;
+    border: 1px solid var(--shell-line);
+    border-radius: 10px;
+    background: #fafaf8;
+    font-size: 13px;
+  }
+  .dial b { display: flex; justify-content: space-between; gap: 12px; font-weight: 600; }
+  .dial output { color: #0f7285; font-variant-numeric: tabular-nums; font-weight: 600; }
+  .dial input { width: 100%; accent-color: #0f7285; }
+
+  /* ---------- 样机区 ---------- */
+  .grid {
+    display: grid;
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+    gap: 26px;
+    max-width: 1240px;
+    margin: 0 auto;
+    padding: 0 28px 64px;
+  }
+  .card {
+    min-width: 0;
+    overflow: hidden;
+    border: 1px solid #d4d4cd;
+    border-radius: 16px;
+    background: #ffffff;
+    box-shadow: 0 8px 30px rgba(28, 28, 24, .05);
+  }
+  .card[data-rec="true"] { border-color: #0f7285; box-shadow: 0 10px 34px rgba(15, 114, 133, .14); }
+  .card-head {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: 14px;
+    padding: 16px 20px 14px;
+    border-bottom: 1px solid #ecece7;
+  }
+  .card-id {
+    margin-bottom: 4px;
+    color: #9a998f;
+    font: 600 11px/1 ui-monospace, SFMono-Regular, Menlo, monospace;
+    letter-spacing: .12em;
+  }
+  .card-title-row { display: flex; align-items: baseline; gap: 10px; flex-wrap: wrap; }
+  .card h2 { margin: 0; font-size: 20px; font-weight: 600; line-height: 1.2; }
+  .card .tag { margin: 0; color: var(--shell-muted); font-size: 12.5px; }
+  .badge {
+    flex: 0 0 auto;
+    padding: 5px 10px;
+    border-radius: 999px;
+    background: #0f7285;
+    color: #fff;
+    font-size: 11px;
+    font-weight: 600;
+  }
+  .mock {
+    display: grid;
+    place-items: start center;
+    padding: 26px 18px 30px;
+    overflow: hidden;
+  }
+  .wx {
+    width: 375px;
+    max-width: 100%;
+    overflow: hidden;
+    border-radius: 14px;
+    padding: 22px 8px 34px;
+    font-size: 16px;
+    line-height: 1.8;
+    letter-spacing: 0;
+    text-align: left;
+    box-shadow: 0 14px 40px rgba(20, 20, 18, .10);
+  }
+  .wx p { margin: 0 0 1.2em; overflow-wrap: anywhere; word-break: break-word; }
+  .wx a { word-break: break-all; overflow-wrap: anywhere; }
+  .wx h2, .wx h3 { text-align: left; letter-spacing: 0; }
+  .wx ul { margin: 0 0 1.2em; padding-left: 1.3em; }
+  .wx li { margin: 0 0 .5em; overflow-wrap: anywhere; }
+  .wx .wx-title { font-size: 21px; font-weight: 600; line-height: 1.4; margin: 0 0 6px; }
+  .wx .wx-meta { font-size: 12.5px; margin: 0 0 1.6em; }
+  .wx .lede { font-size: 16px; }
+  .wx blockquote { margin: 1.4em 0; }
+  .wx blockquote p { margin: 0; font-size: 15px; }
+  .wx .fig { margin: 1.5em 0; }
+  .wx .fig svg { display: block; width: 100%; height: auto; }
+  .wx .fig figcaption { margin-top: 8px; font-size: 12.5px; line-height: 1.6; text-align: center; }
+
+  /* 代码块：macOS 三色点 + 自动换行 */
+  .code { margin: 1.5em 0; border-radius: 10px; overflow: hidden; font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace; }
+  .code-bar { display: flex; align-items: center; gap: 6px; padding: 9px 12px; }
+  .code-bar .dot { width: 9px; height: 9px; border-radius: 50%; flex: 0 0 auto; }
+  .code-bar .dot.r { background: #ff5f57; } .code-bar .dot.y { background: #febc2e; } .code-bar .dot.g { background: #28c840; }
+  .code-bar .code-name { margin-left: 8px; font-size: 11px; }
+  .code-body { padding: 4px 12px 12px; }
+  .cl { display: flex; gap: 12px; padding: 4px 0; font-size: 12px; line-height: 1.7; }
+  .cl .ln { flex: 0 0 1.2em; text-align: right; user-select: none; }
+  .cl .ct { min-width: 0; white-space: normal; overflow-wrap: anywhere; word-break: break-word; }
+
+  .qmdp-pick-button {
+    display: block;
+    width: calc(100% - 40px);
+    min-height: 44px;
+    margin: 16px 20px 20px;
+    border: 0;
+    border-radius: 10px;
+    background: #1e1e1b;
+    color: #fff;
+    font-size: 14px;
+    font-weight: 600;
+    cursor: pointer;
+  }
+
+  /* ============================================================
+     A · 夜航 —— 深色阅读舱：墨蓝黑底、航标琥珀、短线下划线标题
+     ============================================================ */
+  .dir-a .mock { background: #3a3f47; }
+  .dir-a .wx { background: #15181d; color: #d6d4cd; }
+  .dir-a .wx-title { color: #f2f0e9; }
+  .dir-a .wx-meta { color: #7d838e; }
+  .dir-a .lede { color: #b9b7ae; }
+  .dir-a .wx h2 {
+    display: table;
+    margin: 2.2em 0 1.1em;
+    padding-bottom: 6px;
+    border-bottom: 3px solid #f0a23c;
+    font-size: 20px; font-weight: 600; line-height: 1.45; color: #f2f0e9;
+  }
+  .dir-a .wx h3 { margin: 1.8em 0 .8em; font-size: 17px; font-weight: 600; line-height: 1.5; color: #f0a23c; }
+  .dir-a strong { color: #f0a23c; font-weight: 600; }
+  .dir-a a { color: #f0a23c; text-decoration: underline; text-underline-offset: 3px; }
+  .dir-a blockquote { padding: 14px 16px; border-radius: 10px; background: #20252d; }
+  .dir-a blockquote p { color: #a9afba; }
+  .dir-a li::marker { color: #f0a23c; }
+  .dir-a .fig svg { border-radius: 10px; background: #20252d; }
+  .dir-a .fig .bar { fill: #f0a23c; }
+  .dir-a .fig .bar.dim { fill: #39404b; }
+  .dir-a .fig .lbl { fill: #8d939e; font-size: 9px; font-family: ui-monospace, monospace; }
+  .dir-a .fig figcaption { color: #7d838e; }
+  .dir-a .code { background: #0e1116; }
+  .dir-a .code-bar { background: #1a1f26; }
+  .dir-a .code-bar .code-name { color: #6d7480; }
+  .dir-a .cl .ln { color: #4a515c; }
+  .dir-a .cl .ct { color: #d0cec6; }
+
+  /* ============================================================
+     B · 蓝图注（推荐）—— 工程简报：冷白纸面、深青信号、通栏发线标题
+     ============================================================ */
+  .dir-b .mock { background: #dde7ec; }
+  .dir-b .wx { background: #fbfdfe; color: #25343f; }
+  .dir-b .wx-title { color: #142530; }
+  .dir-b .wx-meta { color: #6b7f8c; }
+  .dir-b .lede { color: #415664; }
+  .dir-b .wx h2 {
+    margin: 2.3em 0 1.1em;
+    padding-bottom: 10px;
+    border-bottom: 1px solid #c3d9e0;
+    font-size: 20px; font-weight: 600; line-height: 1.3; color: #142530;
+  }
+  .dir-b .wx h3 { margin: 1.8em 0 .7em; font-size: 16px; font-weight: 600; line-height: 1.5; color: #0f7285; letter-spacing: .02em; }
+  .dir-b strong { padding: 0 4px; border-radius: 3px; background: #dff0f4; color: #0b5b6b; font-weight: 600; }
+  .dir-b a { color: #0f7285; text-decoration: underline; text-underline-offset: 3px; }
+  .dir-b blockquote { padding: 14px 2px; border-top: 1px solid #c3d9e0; border-bottom: 1px solid #c3d9e0; }
+  .dir-b blockquote p { color: #4d6472; }
+  .dir-b li::marker { color: #0f7285; }
+  .dir-b .fig svg { border: 1px solid #d3e2e8; border-radius: 8px; background: #f2f8fa; }
+  .dir-b .fig .bar { fill: #0f7285; }
+  .dir-b .fig .bar.dim { fill: #b8d4dc; }
+  .dir-b .fig .lbl { fill: #6b7f8c; font-size: 9px; font-family: ui-monospace, monospace; }
+  .dir-b .fig figcaption { color: #6b7f8c; }
+  .dir-b .code { border: 1px solid #d3e2e8; background: #f2f8fa; }
+  .dir-b .code-bar { background: #e2edf1; }
+  .dir-b .code-bar .code-name { color: #6b7f8c; }
+  .dir-b .cl .ln { color: #9db4bd; }
+  .dir-b .cl .ct { color: #2a3b46; }
+
+  /* ============================================================
+     C · 橙页 —— 田野手册：暖白纸面、工具橙实块标题、圆角引用
+     ============================================================ */
+  .dir-c .mock { background: #e9e2d5; }
+  .dir-c .wx { background: #fdfcf8; color: #2c2620; }
+  .dir-c .wx-title { color: #201c16; }
+  .dir-c .wx-meta { color: #8a8172; }
+  .dir-c .lede { color: #57503f; }
+  .dir-c .wx h2 {
+    display: table;
+    margin: 2.2em 0 1.1em;
+    padding: 7px 13px;
+    border-radius: 8px;
+    background: #d35f0b; color: #ffffff;
+    font-size: 18px; font-weight: 600; line-height: 1.4;
+  }
+  .dir-c .wx h3 {
+    display: table;
+    margin: 1.8em 0 .7em;
+    padding: 5px 10px;
+    border-radius: 6px;
+    background: #f5eee1;
+    font-size: 16px; font-weight: 600; line-height: 1.5; color: #201c16;
+  }
+  .dir-c strong { color: #c0560a; font-weight: 600; }
+  .dir-c a { color: #b04e05; text-decoration: underline; text-underline-offset: 3px; }
+  .dir-c blockquote { padding: 14px 16px; border-radius: 12px; background: #f5eee1; }
+  .dir-c blockquote p { color: #6b6152; }
+  .dir-c li::marker { color: #d35f0b; }
+  .dir-c .fig svg { border-radius: 12px; background: #f5eee1; }
+  .dir-c .fig .bar { fill: #d35f0b; }
+  .dir-c .fig .bar.dim { fill: #e4cbaa; }
+  .dir-c .fig .lbl { fill: #8a8172; font-size: 9px; font-family: ui-monospace, monospace; }
+  .dir-c .fig figcaption { color: #8a8172; }
+  .dir-c .code { background: #29221b; }
+  .dir-c .code-bar { background: #352b21; }
+  .dir-c .code-bar .code-name { color: #8d7f6d; }
+  .dir-c .cl .ln { color: #6b5f4f; }
+  .dir-c .cl .ct { color: #ede3d3; }
+
+  /* ============================================================
+     D · 墨白 —— 零彩度留白刊：纯灰阶、顶部粗线大标题、直角灰块
+     ============================================================ */
+  .dir-d .mock { background: #e3e3df; }
+  .dir-d .wx { background: #ffffff; color: #31312d; border-radius: 4px; }
+  .dir-d .wx-title { color: #1b1b19; font-size: 23px; }
+  .dir-d .wx-meta { color: #8f8f88; }
+  .dir-d .lede { color: #55554f; }
+  .dir-d .wx h2 {
+    margin: 2.4em 0 1.1em;
+    padding-top: 12px;
+    border-top: 2px solid #1b1b19;
+    font-size: 22px; font-weight: 600; line-height: 1.35; color: #1b1b19;
+  }
+  .dir-d .wx h3 {
+    margin: 2em 0 .7em;
+    padding-top: 8px;
+    border-top: 1px solid #d8d8d2;
+    font-size: 16px; font-weight: 600; line-height: 1.5; color: #1b1b19;
+  }
+  .dir-d strong { color: #1b1b19; font-weight: 600; text-decoration: underline; text-decoration-thickness: 2px; text-underline-offset: 4px; }
+  .dir-d a { color: #1b1b19; text-decoration: underline; text-underline-offset: 3px; }
+  .dir-d blockquote { padding: 16px; border-radius: 0; background: #f2f2ee; }
+  .dir-d blockquote p { color: #5c5c56; }
+  .dir-d li::marker { color: #1b1b19; }
+  .dir-d .fig svg { background: #f2f2ee; }
+  .dir-d .fig .bar { fill: #1b1b19; }
+  .dir-d .fig .bar.dim { fill: #c9c9c2; }
+  .dir-d .fig .lbl { fill: #8f8f88; font-size: 9px; font-family: ui-monospace, monospace; }
+  .dir-d .fig figcaption { color: #8f8f88; }
+  .dir-d .code { border-radius: 0; background: #f2f2ee; }
+  .dir-d .code-bar { background: #e6e6e0; }
+  .dir-d .code-bar .code-name { color: #8f8f88; }
+  .dir-d .cl .ln { color: #a9a9a1; }
+  .dir-d .cl .ct { color: #31312d; }
+
+  @media (max-width: 880px) {
+    .brief { padding: 26px 16px 6px; }
+    .dials { grid-template-columns: 1fr; padding: 0 16px; margin-bottom: 22px; }
+    .grid { grid-template-columns: 1fr; padding: 0 16px 48px; gap: 20px; }
+    .mock { padding: 18px 10px 22px; }
+    .wx { width: 100%; max-width: 375px; }
+  }
+  @media (prefers-reduced-motion: reduce) { * { transition: none !important; } }
+</style>
+</head>
+<body>
+
+  <!-- ================= 说明区 ================= -->
+  <header class="brief">
+    <p class="brief-eyebrow">QIAOMU CLEAN READING · K3 REDESIGN</p>
+    <h1>乔木简阅 · 四个新方向</h1>
+    <p class="note">这是方向样机，不是最终主题；选择一个方向后才会落地实现为微信导出主题。四套都满足 8px 正文边距、16px 正文、左对齐 H2、可换行代码块。</p>
+  </header>
+
+  <section class="dials" data-qmdp-dials aria-label="设计拨盘">
+    <label class="dial"><b>视觉冒险度 <output id="varianceOut" data-qmdp-output="variance">7</output></b><input id="variance" data-qmdp-dial="variance" type="range" min="1" max="10" value="7"></label>
+    <label class="dial"><b>动效强度 <output id="motionOut" data-qmdp-output="motion">1</output></b><input id="motion" data-qmdp-dial="motion" type="range" min="1" max="10" value="1"></label>
+    <label class="dial"><b>信息密度 <output id="densityOut" data-qmdp-output="density">6</output></b><input id="density" data-qmdp-dial="density" type="range" min="1" max="10" value="6"></label>
+  </section>
+
+  <!-- ================= 样机区 ================= -->
+  <main class="grid">
+
+    <!-- ========== A · 夜航 ========== -->
+    <article class="card dir-a" data-direction="A" data-name="夜航">
+      <header class="card-head">
+        <div>
+          <div class="card-id">DIRECTION A</div>
+          <div class="card-title-row"><h2 data-direction-name>夜航</h2><p class="tag">深色阅读舱 · 琥珀航标</p></div>
+        </div>
+      </header>
+      <div class="mock"><div class="wx">
+        <div class="wx-title">我如何用 AI 读完三份百页研报</div>
+        <div class="wx-meta">向阳乔木 · 2026-09-03</div>
+        <p class="lede">上周我把三份上百页的行业研报丢进同一个 AI 工作流，想让机器替我先读一遍。结果出乎意料：真正省时间的不是总结，而是提问的顺序。</p>
+        <h2>先问结论，再问依据</h2>
+        <p>大多数人拿到 AI 总结的第一反应是<strong>直接相信</strong>，因为它语气笃定、结构完整。但笃定的语气，恰恰是语言模型最擅长伪装的部分。</p>
+        <h3>让模型自己暴露不确定性</h3>
+        <p>我在<a href="#">上一篇工作流笔记</a>里写过完整方法，提示词也公开在 https://qiaomu.ai/notes/ai-report-reading-workflow-v2 ，可以直接复制复用。</p>
+        <blockquote><p>工具负责读得快，人负责问得对。顺序一旦反过来，AI 就只是一个更贵的搜索框。</p></blockquote>
+        <ul>
+          <li>这份报告的结论在什么条件下会失效？</li>
+          <li>数据样本覆盖到哪一年、哪个市场？</li>
+          <li>作者和机构的利益立场是什么？</li>
+        </ul>
+        <figure class="fig">
+          <svg viewBox="0 0 340 120" role="img" aria-label="三种提问顺序的信息提取率对比">
+            <rect class="bar dim" x="30"  y="58" width="70" height="42" rx="3"></rect>
+            <rect class="bar dim" x="135" y="40" width="70" height="60" rx="3"></rect>
+            <rect class="bar"     x="240" y="22" width="70" height="78" rx="3"></rect>
+            <text class="lbl" x="65"  y="112" text-anchor="middle">直接总结</text>
+            <text class="lbl" x="170" y="112" text-anchor="middle">先列大纲</text>
+            <text class="lbl" x="275" y="112" text-anchor="middle">先问结论</text>
+          </svg>
+          <figcaption>图：同一研报在三种提问顺序下的有效信息提取率（自测样本 n=12）</figcaption>
+        </figure>
+        <div class="code">
+          <div class="code-bar"><span class="dot r"></span><span class="dot y"></span><span class="dot g"></span><span class="code-name">prompt.txt</span></div>
+          <div class="code-body">
+            <div class="cl"><span class="ln">1</span><span class="ct">先只输出这份报告的 3 个核心结论，每条不超过 40 字。</span></div>
+            <div class="cl"><span class="ln">2</span><span class="ct">再列出每个结论对应的原始数据出处与页码。</span></div>
+            <div class="cl"><span class="ln">3</span><span class="ct">参考 https://qiaomu.ai/notes/ai-report-reading-workflow-v2 中的提问顺序执行。</span></div>
+          </div>
+        </div>
+        <p>最后一步永远是人工复核：把 AI 给的结论和原文页码对一遍，<strong>十分钟，换一份敢署名的判断</strong>。</p>
+      </div></div>
+      <button class="qmdp-pick-button" type="button">选择 A · 夜航</button>
+    </article>
+
+    <!-- ========== B · 蓝图注 ========== -->
+    <article class="card dir-b" data-direction="B" data-name="蓝图注" data-rec="true">
+      <header class="card-head">
+        <div>
+          <div class="card-id">DIRECTION B</div>
+          <div class="card-title-row"><h2 data-direction-name>蓝图注</h2><p class="tag">工程简报 · 深青通栏发线</p></div>
+        </div>
+        <span class="badge">推荐</span>
+      </header>
+      <div class="mock"><div class="wx">
+        <div class="wx-title">我如何用 AI 读完三份百页研报</div>
+        <div class="wx-meta">向阳乔木 · 2026-09-03</div>
+        <p class="lede">上周我把三份上百页的行业研报丢进同一个 AI 工作流，想让机器替我先读一遍。结果出乎意料：真正省时间的不是总结，而是提问的顺序。</p>
+        <h2>先问结论，再问依据</h2>
+        <p>大多数人拿到 AI 总结的第一反应是<strong>直接相信</strong>，因为它语气笃定、结构完整。但笃定的语气，恰恰是语言模型最擅长伪装的部分。</p>
+        <h3>让模型自己暴露不确定性</h3>
+        <p>我在<a href="#">上一篇工作流笔记</a>里写过完整方法，提示词也公开在 https://qiaomu.ai/notes/ai-report-reading-workflow-v2 ，可以直接复制复用。</p>
+        <blockquote><p>工具负责读得快，人负责问得对。顺序一旦反过来，AI 就只是一个更贵的搜索框。</p></blockquote>
+        <ul>
+          <li>这份报告的结论在什么条件下会失效？</li>
+          <li>数据样本覆盖到哪一年、哪个市场？</li>
+          <li>作者和机构的利益立场是什么？</li>
+        </ul>
+        <figure class="fig">
+          <svg viewBox="0 0 340 120" role="img" aria-label="三种提问顺序的信息提取率对比">
+            <rect class="bar dim" x="30"  y="58" width="70" height="42" rx="3"></rect>
+            <rect class="bar dim" x="135" y="40" width="70" height="60" rx="3"></rect>
+            <rect class="bar"     x="240" y="22" width="70" height="78" rx="3"></rect>
+            <text class="lbl" x="65"  y="112" text-anchor="middle">直接总结</text>
+            <text class="lbl" x="170" y="112" text-anchor="middle">先列大纲</text>
+            <text class="lbl" x="275" y="112" text-anchor="middle">先问结论</text>
+          </svg>
+          <figcaption>图：同一研报在三种提问顺序下的有效信息提取率（自测样本 n=12）</figcaption>
+        </figure>
+        <div class="code">
+          <div class="code-bar"><span class="dot r"></span><span class="dot y"></span><span class="dot g"></span><span class="code-name">prompt.txt</span></div>
+          <div class="code-body">
+            <div class="cl"><span class="ln">1</span><span class="ct">先只输出这份报告的 3 个核心结论，每条不超过 40 字。</span></div>
+            <div class="cl"><span class="ln">2</span><span class="ct">再列出每个结论对应的原始数据出处与页码。</span></div>
+            <div class="cl"><span class="ln">3</span><span class="ct">参考 https://qiaomu.ai/notes/ai-report-reading-workflow-v2 中的提问顺序执行。</span></div>
+          </div>
+        </div>
+        <p>最后一步永远是人工复核：把 AI 给的结论和原文页码对一遍，<strong>十分钟，换一份敢署名的判断</strong>。</p>
+      </div></div>
+      <button class="qmdp-pick-button" type="button">选择 B · 蓝图注</button>
+    </article>
+
+    <!-- ========== C · 橙页 ========== -->
+    <article class="card dir-c" data-direction="C" data-name="橙页">
+      <header class="card-head">
+        <div>
+          <div class="card-id">DIRECTION C</div>
+          <div class="card-title-row"><h2 data-direction-name>橙页</h2><p class="tag">田野手册 · 工具橙实块标题</p></div>
+        </div>
+      </header>
+      <div class="mock"><div class="wx">
+        <div class="wx-title">我如何用 AI 读完三份百页研报</div>
+        <div class="wx-meta">向阳乔木 · 2026-09-03</div>
+        <p class="lede">上周我把三份上百页的行业研报丢进同一个 AI 工作流，想让机器替我先读一遍。结果出乎意料：真正省时间的不是总结，而是提问的顺序。</p>
+        <h2>先问结论，再问依据</h2>
+        <p>大多数人拿到 AI 总结的第一反应是<strong>直接相信</strong>，因为它语气笃定、结构完整。但笃定的语气，恰恰是语言模型最擅长伪装的部分。</p>
+        <h3>让模型自己暴露不确定性</h3>
+        <p>我在<a href="#">上一篇工作流笔记</a>里写过完整方法，提示词也公开在 https://qiaomu.ai/notes/ai-report-reading-workflow-v2 ，可以直接复制复用。</p>
+        <blockquote><p>工具负责读得快，人负责问得对。顺序一旦反过来，AI 就只是一个更贵的搜索框。</p></blockquote>
+        <ul>
+          <li>这份报告的结论在什么条件下会失效？</li>
+          <li>数据样本覆盖到哪一年、哪个市场？</li>
+          <li>作者和机构的利益立场是什么？</li>
+        </ul>
+        <figure class="fig">
+          <svg viewBox="0 0 340 120" role="img" aria-label="三种提问顺序的信息提取率对比">
+            <rect class="bar dim" x="30"  y="58" width="70" height="42" rx="3"></rect>
+            <rect class="bar dim" x="135" y="40" width="70" height="60" rx="3"></rect>
+            <rect class="bar"     x="240" y="22" width="70" height="78" rx="3"></rect>
+            <text class="lbl" x="65"  y="112" text-anchor="middle">直接总结</text>
+            <text class="lbl" x="170" y="112" text-anchor="middle">先列大纲</text>
+            <text class="lbl" x="275" y="112" text-anchor="middle">先问结论</text>
+          </svg>
+          <figcaption>图：同一研报在三种提问顺序下的有效信息提取率（自测样本 n=12）</figcaption>
+        </figure>
+        <div class="code">
+          <div class="code-bar"><span class="dot r"></span><span class="dot y"></span><span class="dot g"></span><span class="code-name">prompt.txt</span></div>
+          <div class="code-body">
+            <div class="cl"><span class="ln">1</span><span class="ct">先只输出这份报告的 3 个核心结论，每条不超过 40 字。</span></div>
+            <div class="cl"><span class="ln">2</span><span class="ct">再列出每个结论对应的原始数据出处与页码。</span></div>
+            <div class="cl"><span class="ln">3</span><span class="ct">参考 https://qiaomu.ai/notes/ai-report-reading-workflow-v2 中的提问顺序执行。</span></div>
+          </div>
+        </div>
+        <p>最后一步永远是人工复核：把 AI 给的结论和原文页码对一遍，<strong>十分钟，换一份敢署名的判断</strong>。</p>
+      </div></div>
+      <button class="qmdp-pick-button" type="button">选择 C · 橙页</button>
+    </article>
+
+    <!-- ========== D · 墨白 ========== -->
+    <article class="card dir-d" data-direction="D" data-name="墨白">
+      <header class="card-head">
+        <div>
+          <div class="card-id">DIRECTION D</div>
+          <div class="card-title-row"><h2 data-direction-name>墨白</h2><p class="tag">零彩度留白刊 · 纯灰阶层级</p></div>
+        </div>
+      </header>
+      <div class="mock"><div class="wx">
+        <div class="wx-title">我如何用 AI 读完三份百页研报</div>
+        <div class="wx-meta">向阳乔木 · 2026-09-03</div>
+        <p class="lede">上周我把三份上百页的行业研报丢进同一个 AI 工作流，想让机器替我先读一遍。结果出乎意料：真正省时间的不是总结，而是提问的顺序。</p>
+        <h2>先问结论，再问依据</h2>
+        <p>大多数人拿到 AI 总结的第一反应是<strong>直接相信</strong>，因为它语气笃定、结构完整。但笃定的语气，恰恰是语言模型最擅长伪装的部分。</p>
+        <h3>让模型自己暴露不确定性</h3>
+        <p>我在<a href="#">上一篇工作流笔记</a>里写过完整方法，提示词也公开在 https://qiaomu.ai/notes/ai-report-reading-workflow-v2 ，可以直接复制复用。</p>
+        <blockquote><p>工具负责读得快，人负责问得对。顺序一旦反过来，AI 就只是一个更贵的搜索框。</p></blockquote>
+        <ul>
+          <li>这份报告的结论在什么条件下会失效？</li>
+          <li>数据样本覆盖到哪一年、哪个市场？</li>
+          <li>作者和机构的利益立场是什么？</li>
+        </ul>
+        <figure class="fig">
+          <svg viewBox="0 0 340 120" role="img" aria-label="三种提问顺序的信息提取率对比">
+            <rect class="bar dim" x="30"  y="58" width="70" height="42" rx="3"></rect>
+            <rect class="bar dim" x="135" y="40" width="70" height="60" rx="3"></rect>
+            <rect class="bar"     x="240" y="22" width="70" height="78" rx="3"></rect>
+            <text class="lbl" x="65"  y="112" text-anchor="middle">直接总结</text>
+            <text class="lbl" x="170" y="112" text-anchor="middle">先列大纲</text>
+            <text class="lbl" x="275" y="112" text-anchor="middle">先问结论</text>
+          </svg>
+          <figcaption>图：同一研报在三种提问顺序下的有效信息提取率（自测样本 n=12）</figcaption>
+        </figure>
+        <div class="code">
+          <div class="code-bar"><span class="dot r"></span><span class="dot y"></span><span class="dot g"></span><span class="code-name">prompt.txt</span></div>
+          <div class="code-body">
+            <div class="cl"><span class="ln">1</span><span class="ct">先只输出这份报告的 3 个核心结论，每条不超过 40 字。</span></div>
+            <div class="cl"><span class="ln">2</span><span class="ct">再列出每个结论对应的原始数据出处与页码。</span></div>
+            <div class="cl"><span class="ln">3</span><span class="ct">参考 https://qiaomu.ai/notes/ai-report-reading-workflow-v2 中的提问顺序执行。</span></div>
+          </div>
+        </div>
+        <p>最后一步永远是人工复核：把 AI 给的结论和原文页码对一遍，<strong>十分钟，换一份敢署名的判断</strong>。</p>
+      </div></div>
+      <button class="qmdp-pick-button" type="button">选择 D · 墨白</button>
+    </article>
+
+  </main>
+
+  <script>
+    ['variance', 'motion', 'density'].forEach(function (id) {
+      var input = document.getElementById(id);
+      var output = document.getElementById(id + 'Out');
+      input.addEventListener('input', function () {
+        output.value = input.value;
+        output.textContent = input.value;
+      });
+    });
+  </script>
+</body>
+</html>

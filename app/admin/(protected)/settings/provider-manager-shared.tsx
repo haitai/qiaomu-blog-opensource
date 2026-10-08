@@ -1,6 +1,7 @@
 'use client'
 
-import type { ReactNode } from 'react'
+import { useEffect, useMemo, useRef, useState, type KeyboardEvent, type ReactNode } from 'react'
+import { Search, X } from 'lucide-react'
 import { Dropdown } from '@/components/Dropdown'
 
 export interface BaseProviderProfile {
@@ -165,16 +166,18 @@ interface ProviderDialogProps {
 
 export function ProviderDialog({ title, onClose, headerAction, children }: ProviderDialogProps) {
   return (
-    <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/30" onClick={onClose}>
+    <div className="fixed inset-0 z-50 grid place-items-center bg-black/30 p-2 sm:p-4" onClick={onClose}>
       <div
-        className="mx-4 w-full max-w-2xl rounded-xl border border-[var(--editor-line)] bg-[var(--editor-panel)] p-6 shadow-xl"
+        className="flex max-h-[calc(100dvh-1rem)] w-full max-w-2xl flex-col overflow-hidden rounded-xl border border-[var(--editor-line)] bg-[var(--editor-panel)] shadow-xl sm:max-h-[min(92dvh,760px)]"
         onClick={(event) => event.stopPropagation()}
       >
-        <div className="mb-4 flex items-center justify-between">
+        <div className="flex shrink-0 items-center justify-between gap-3 border-b border-[var(--editor-line)] px-4 py-3 sm:px-6">
           <h3 className="text-lg font-semibold text-[var(--editor-ink)]">{title}</h3>
           {headerAction}
         </div>
-        {children}
+        <div className="min-h-0 flex-1 overflow-y-auto px-4 py-4 sm:px-6 sm:py-5">
+          {children}
+        </div>
       </div>
     </div>
   )
@@ -195,48 +198,251 @@ export function ProviderTemplateModal({
   onClose,
   onSelect,
 }: ProviderTemplateModalProps) {
+  const dialogRef = useRef<HTMLDivElement>(null)
+  const searchRef = useRef<HTMLInputElement>(null)
+  const [query, setQuery] = useState('')
+  const [activeCategory, setActiveCategory] = useState('all')
+
+  const allPresets = useMemo(() => groups.flatMap((group) => group.presets), [groups])
+  const categoryFilters = useMemo(() => [
+    { id: 'all', label: '全部', count: allPresets.length },
+    ...groups.map((group) => ({ id: group.category, label: group.category, count: group.presets.length })),
+  ], [allPresets.length, groups])
+
+  const normalizedQuery = query.trim().toLowerCase()
+  const visibleGroups = useMemo(() => {
+    return groups
+      .filter((group) => activeCategory === 'all' || group.category === activeCategory)
+      .map((group) => ({
+        category: group.category,
+        presets: group.presets.filter((preset) => {
+          if (!normalizedQuery) return true
+          return [
+            preset.name,
+            preset.description,
+            preset.defaultModel,
+            preset.category,
+          ].some((value) => value.toLowerCase().includes(normalizedQuery))
+        }),
+      }))
+      .filter((group) => group.presets.length > 0)
+  }, [activeCategory, groups, normalizedQuery])
+
+  const visibleCount = visibleGroups.reduce((sum, group) => sum + group.presets.length, 0)
+  const activeCategoryLabel = categoryFilters.find((category) => category.id === activeCategory)?.label || '全部'
+
+  useEffect(() => {
+    const previousActiveElement = document.activeElement instanceof HTMLElement ? document.activeElement : null
+    window.setTimeout(() => searchRef.current?.focus(), 0)
+
+    const handleKeyDown = (event: globalThis.KeyboardEvent) => {
+      if (event.key === 'Escape') {
+        onClose()
+        return
+      }
+
+      if (event.key !== 'Tab') return
+
+      const focusable = dialogRef.current
+        ? Array.from(dialogRef.current.querySelectorAll<HTMLElement>(
+          'a[href], button:not([disabled]), input:not([disabled]), textarea:not([disabled]), select:not([disabled]), [tabindex]:not([tabindex="-1"])',
+        )).filter((element) => !element.hasAttribute('disabled') && element.offsetParent !== null)
+        : []
+
+      if (focusable.length === 0) return
+
+      const first = focusable[0]
+      const last = focusable[focusable.length - 1]
+
+      if (event.shiftKey && document.activeElement === first) {
+        event.preventDefault()
+        last.focus()
+      } else if (!event.shiftKey && document.activeElement === last) {
+        event.preventDefault()
+        first.focus()
+      }
+    }
+
+    document.addEventListener('keydown', handleKeyDown)
+    return () => {
+      document.removeEventListener('keydown', handleKeyDown)
+      previousActiveElement?.focus()
+    }
+  }, [onClose])
+
+  const handleOverlayKeyDown = (event: KeyboardEvent<HTMLDivElement>) => {
+    if (event.key === 'Enter' && event.target === event.currentTarget) {
+      event.preventDefault()
+    }
+  }
+
   return (
-    <div className="fixed inset-0 z-[60] flex items-center justify-center bg-black/30" onClick={onClose}>
+    <div
+      className="fixed inset-0 z-[60] grid place-items-center bg-black/40 p-2 sm:p-4"
+      onClick={onClose}
+      onKeyDown={handleOverlayKeyDown}
+    >
       <div
-        className="mx-4 w-full max-w-xl rounded-xl border border-[var(--editor-line)] bg-[var(--editor-panel)] p-6 shadow-xl"
+        ref={dialogRef}
+        role="dialog"
+        aria-modal="true"
+        aria-labelledby="provider-template-title"
+        className="flex max-h-[calc(100dvh-1rem)] w-full max-w-4xl flex-col overflow-hidden rounded-xl border border-[var(--editor-line)] bg-[var(--editor-panel)] shadow-[0_28px_90px_-32px_rgba(15,23,42,0.65)] sm:max-h-[min(92dvh,760px)]"
         onClick={(event) => event.stopPropagation()}
       >
-        <h3 className="mb-4 text-lg font-semibold text-[var(--editor-ink)]">快捷模板</h3>
-        <div className="space-y-4">
-          {groups.map((group) => (
-            <div key={group.category}>
-              <div className="mb-2 text-xs font-semibold uppercase tracking-wider text-[var(--editor-muted)]">
-                {group.category}
+        <div className="shrink-0 border-b border-[var(--editor-line)] bg-[var(--background)]/75 px-4 py-3 sm:px-5">
+          <div className="mb-3 flex items-center justify-between gap-3">
+            <div className="min-w-0">
+              <h3 id="provider-template-title" className="truncate text-lg font-semibold text-[var(--editor-ink)]">
+                快捷模板
+              </h3>
+              <p className="mt-0.5 text-xs text-[var(--editor-muted)]">
+                {activeCategoryLabel} · {visibleCount} / {allPresets.length}
+              </p>
+            </div>
+            <button
+              type="button"
+              onClick={onClose}
+              className="rounded-full p-2 text-[var(--editor-muted)] transition hover:bg-[var(--editor-soft)] hover:text-[var(--editor-ink)]"
+              aria-label="关闭快捷模板"
+            >
+              <X className="h-5 w-5" />
+            </button>
+          </div>
+
+          <div className="flex items-center gap-2 rounded-lg border border-[var(--editor-line)] bg-[var(--editor-panel)] px-3 py-2">
+            <Search className="h-4 w-4 shrink-0 text-[var(--editor-muted)]" aria-hidden="true" />
+            <input
+              ref={searchRef}
+              type="search"
+              value={query}
+              onChange={(event) => setQuery(event.target.value)}
+              placeholder="搜索模板、模型或平台"
+              className="min-w-0 flex-1 bg-transparent text-sm text-[var(--editor-ink)] outline-none placeholder:text-[var(--editor-muted)]"
+            />
+            {query ? (
+              <button
+                type="button"
+                onClick={() => setQuery('')}
+                className="rounded-full p-1 text-[var(--editor-muted)] transition hover:bg-[var(--editor-soft)] hover:text-[var(--editor-ink)]"
+                aria-label="清空搜索"
+              >
+                <X className="h-3.5 w-3.5" />
+              </button>
+            ) : null}
+          </div>
+
+          <div className="mt-3 flex gap-2 overflow-x-auto md:hidden">
+            {categoryFilters.map((category) => (
+              <button
+                key={category.id}
+                type="button"
+                onClick={() => setActiveCategory(category.id)}
+                className={`shrink-0 rounded-full border px-3 py-1.5 text-xs transition ${
+                  activeCategory === category.id
+                    ? 'border-[var(--editor-accent)] bg-[var(--editor-accent)]/10 text-[var(--editor-accent)]'
+                    : 'border-[var(--editor-line)] text-[var(--editor-muted)] hover:bg-[var(--editor-soft)] hover:text-[var(--editor-ink)]'
+                }`}
+              >
+                {category.label} {category.count}
+              </button>
+            ))}
+          </div>
+        </div>
+
+        <div className="grid min-h-0 flex-1 overflow-hidden md:grid-cols-[13rem_minmax(0,1fr)]">
+          <aside className="hidden min-h-0 overflow-y-auto border-r border-[var(--editor-line)] bg-[var(--background)]/45 p-3 md:block">
+            <div className="space-y-1">
+              {categoryFilters.map((category) => (
+                <button
+                  key={category.id}
+                  type="button"
+                  onClick={() => setActiveCategory(category.id)}
+                  className={`flex w-full items-center justify-between gap-3 rounded-lg px-3 py-2 text-left text-sm transition ${
+                    activeCategory === category.id
+                      ? 'bg-[var(--editor-accent)]/10 text-[var(--editor-accent)]'
+                      : 'text-[var(--editor-muted)] hover:bg-[var(--editor-soft)] hover:text-[var(--editor-ink)]'
+                  }`}
+                >
+                  <span className="truncate">{category.label}</span>
+                  <span className="rounded-full bg-[var(--editor-panel)] px-2 py-0.5 text-[11px] text-[var(--editor-muted)]">
+                    {category.count}
+                  </span>
+                </button>
+              ))}
+            </div>
+          </aside>
+
+          <div className="min-h-0 overflow-y-auto px-4 py-4 sm:px-5">
+            {visibleGroups.length === 0 ? (
+              <div className="flex min-h-56 items-center justify-center rounded-lg border border-dashed border-[var(--editor-line)] text-sm text-[var(--editor-muted)]">
+                没有匹配模板
               </div>
-              <div className="space-y-2">
-                {group.presets.map((preset) => (
-                  <button
-                    key={preset.id}
-                    type="button"
-                    onClick={() => onSelect(preset.id)}
-                    className="w-full rounded-lg border border-[var(--editor-line)] px-4 py-3 text-left hover:bg-[var(--editor-soft)]"
-                  >
-                    <div className="text-sm font-semibold text-[var(--editor-ink)]">
-                      {preset.name}
-                      {preset.recommended ? (
-                        <span className="ml-2 rounded bg-emerald-500/10 px-1.5 py-0.5 text-[10px] text-emerald-600">推荐</span>
-                      ) : null}
+            ) : (
+              <div className="space-y-5">
+                {visibleGroups.map((group) => (
+                  <section key={group.category}>
+                    <div className="mb-2 flex items-center justify-between gap-3">
+                      <h4 className="text-xs font-semibold uppercase tracking-wider text-[var(--editor-muted)]">
+                        {group.category}
+                      </h4>
+                      <span className="text-xs text-[var(--editor-muted)]">{group.presets.length}</span>
                     </div>
-                    <div className="mt-1 text-xs text-[var(--editor-muted)]">{preset.description}</div>
-                    <div className="mt-1 text-xs text-[var(--editor-muted)]">{preset.defaultModel}</div>
-                  </button>
+                    <div className="grid gap-2 lg:grid-cols-2">
+                      {group.presets.map((preset) => (
+                        <button
+                          key={preset.id}
+                          type="button"
+                          onClick={() => onSelect(preset.id)}
+                          className="min-h-28 rounded-lg border border-[var(--editor-line)] bg-[var(--editor-panel)] px-4 py-3 text-left transition hover:border-[var(--editor-accent)] hover:bg-[var(--editor-soft)] focus-visible:border-[var(--editor-accent)] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[var(--editor-accent)]/20"
+                        >
+                          <div className="flex min-w-0 items-start justify-between gap-3">
+                            <div className="min-w-0 text-sm font-semibold text-[var(--editor-ink)]">
+                              {preset.name}
+                            </div>
+                            {preset.recommended ? (
+                              <span className="shrink-0 rounded bg-emerald-500/10 px-1.5 py-0.5 text-[10px] text-emerald-600">
+                                推荐
+                              </span>
+                            ) : null}
+                          </div>
+                          <div className="mt-1 line-clamp-2 text-xs leading-5 text-[var(--editor-muted)]">
+                            {preset.description}
+                          </div>
+                          <div className="mt-2 break-all rounded-md bg-[var(--background)] px-2 py-1 font-mono text-[11px] text-[var(--editor-muted)]">
+                            {preset.defaultModel}
+                          </div>
+                        </button>
+                      ))}
+                    </div>
+                  </section>
                 ))}
               </div>
-            </div>
-          ))}
-          <button
-            type="button"
-            onClick={() => onSelect('custom')}
-            className="w-full rounded-lg border border-dashed border-[var(--editor-line)] px-4 py-3 text-left hover:bg-[var(--editor-soft)]"
-          >
-            <div className="text-sm font-semibold text-[var(--editor-ink)]">{customOptionLabel}</div>
-            <div className="mt-1 text-xs text-[var(--editor-muted)]">{customOptionDescription}</div>
-          </button>
+            )}
+          </div>
+        </div>
+
+        <div className="flex shrink-0 flex-col gap-2 border-t border-[var(--editor-line)] bg-[var(--background)]/75 px-4 py-3 sm:flex-row sm:items-center sm:justify-between sm:px-5">
+          <div className="text-xs text-[var(--editor-muted)]">
+            {visibleCount} 个可选模板
+          </div>
+          <div className="flex justify-end gap-2">
+            <button
+              type="button"
+              onClick={onClose}
+              className="rounded-lg border border-[var(--editor-line)] px-3 py-2 text-sm text-[var(--editor-ink)] transition hover:bg-[var(--editor-soft)]"
+            >
+              取消
+            </button>
+            <button
+              type="button"
+              onClick={() => onSelect('custom')}
+              className="rounded-lg border border-dashed border-[var(--editor-line)] px-3 py-2 text-left text-sm font-medium text-[var(--editor-ink)] transition hover:border-[var(--editor-accent)] hover:bg-[var(--editor-soft)] sm:min-w-48"
+              title={customOptionDescription}
+            >
+              {customOptionLabel}
+            </button>
+          </div>
         </div>
       </div>
     </div>

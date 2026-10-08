@@ -1,0 +1,362 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>乔木简阅 · 重设计方向样机</title>
+  <style>
+    :root {
+      color-scheme: light;
+      --shell-bg: #efefec;
+      --shell-text: #181816;
+      --shell-muted: #6d6c67;
+      --shell-line: #d8d7d1;
+    }
+    * { box-sizing: border-box; }
+    html { background: var(--shell-bg); }
+    body {
+      margin: 0;
+      color: var(--shell-text);
+      background: var(--shell-bg);
+      font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", "PingFang SC", "Hiragino Sans GB", sans-serif;
+    }
+    button, input { font: inherit; }
+    .intro {
+      display: flex;
+      align-items: flex-end;
+      justify-content: space-between;
+      gap: 24px;
+      max-width: 1240px;
+      margin: 0 auto;
+      padding: 34px 28px 22px;
+    }
+    .intro-copy { min-width: 0; max-width: 720px; }
+    .eyebrow {
+      margin: 0 0 8px;
+      color: #8a3329;
+      font-size: 12px;
+      font-weight: 750;
+      letter-spacing: .12em;
+      overflow-wrap: anywhere;
+    }
+    .intro h1 {
+      margin: 0;
+      font-family: "Songti SC", STSong, "Noto Serif CJK SC", serif;
+      font-size: clamp(28px, 4vw, 46px);
+      font-weight: 650;
+      line-height: 1.12;
+      letter-spacing: -.04em;
+    }
+    .intro p {
+      margin: 12px 0 0;
+      color: var(--shell-muted);
+      font-size: 14px;
+      line-height: 1.7;
+    }
+    .research-note {
+      flex: 0 0 320px;
+      padding: 14px 16px;
+      border: 1px solid var(--shell-line);
+      border-radius: 10px;
+      background: rgba(255,255,255,.62);
+      color: #4b4a46;
+      font-size: 13px;
+      line-height: 1.55;
+    }
+    .dials {
+      display: grid;
+      grid-template-columns: repeat(3, minmax(180px, 1fr));
+      gap: 14px;
+      max-width: 1184px;
+      margin: 0 auto 24px;
+      padding: 0 28px;
+    }
+    .dial {
+      display: grid;
+      gap: 7px;
+      padding: 12px 14px;
+      border: 1px solid var(--shell-line);
+      border-radius: 10px;
+      background: rgba(255,255,255,.6);
+      font-size: 13px;
+    }
+    .dial b { display: flex; justify-content: space-between; gap: 12px; font-weight: 680; }
+    .dial output { color: #8a3329; font-variant-numeric: tabular-nums; }
+    .dial input { width: 100%; accent-color: #8a3329; }
+    .grid {
+      display: grid;
+      grid-template-columns: repeat(2, minmax(0, 1fr));
+      gap: 24px;
+      max-width: 1240px;
+      margin: 0 auto;
+      padding: 0 28px 60px;
+    }
+    .card {
+      min-width: 0;
+      overflow: hidden;
+      border: 1px solid #d4d3ce;
+      border-radius: 16px;
+      background: #fff;
+      box-shadow: 0 10px 36px rgba(27, 27, 24, .06);
+    }
+    .card[data-rec="true"] { border-color: #9b4035; box-shadow: 0 12px 40px rgba(138, 51, 41, .12); }
+    .card-head {
+      display: flex;
+      align-items: flex-start;
+      justify-content: space-between;
+      gap: 14px;
+      padding: 18px 20px 14px;
+      border-bottom: 1px solid #ebeae6;
+    }
+    .card-id { margin-bottom: 5px; color: #8b8a84; font: 700 11px/1 ui-monospace, SFMono-Regular, Menlo, monospace; letter-spacing: .12em; }
+    .card h2 { margin: 0; font-size: 20px; line-height: 1.2; }
+    .badge {
+      flex: 0 0 auto;
+      padding: 5px 8px;
+      border-radius: 999px;
+      background: #8a3329;
+      color: #fff;
+      font-size: 11px;
+      font-weight: 700;
+    }
+    .mock {
+      min-height: 590px;
+      padding: 24px;
+      overflow: hidden;
+      display: grid;
+      place-items: start center;
+    }
+    .phone {
+      width: 356px;
+      max-width: 100%;
+      overflow: hidden;
+      border: 1px solid rgba(0,0,0,.1);
+      border-radius: 30px;
+      background: #fff;
+      box-shadow: 0 24px 60px rgba(0,0,0,.14);
+    }
+    .phone-bar {
+      display: flex;
+      justify-content: space-between;
+      align-items: center;
+      height: 34px;
+      padding: 0 18px;
+      color: #222;
+      background: rgba(255,255,255,.9);
+      font-size: 10px;
+      font-weight: 700;
+    }
+    .wechat {
+      height: 515px;
+      overflow: hidden;
+      padding: 20px 8px 34px;
+    }
+    .wechat .cover {
+      height: 108px;
+      margin: 0 0 20px;
+      display: grid;
+      place-items: center;
+      overflow: hidden;
+    }
+    .wechat .cover-mark { text-align: center; }
+    .wechat .cover-mark small { display: block; margin-bottom: 6px; font-size: 9px; letter-spacing: .18em; }
+    .wechat .cover-mark b { display: block; font-size: 24px; line-height: 1.2; }
+    .wechat p { margin: 14px 0; font-size: 15px; line-height: 1.78; }
+    .wechat h3 { margin: 30px 0 14px; }
+    .wechat blockquote { margin: 20px 0; }
+    .code {
+      overflow: hidden;
+      margin: 20px 0;
+      border-radius: 10px;
+      font: 10px/1.6 ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace;
+    }
+    .code-top { display: flex; gap: 5px; padding: 9px 11px 5px; }
+    .code-top i { width: 7px; height: 7px; border-radius: 50%; display: block; }
+    .code-top i:nth-child(1){background:#ff5f57}.code-top i:nth-child(2){background:#febc2e}.code-top i:nth-child(3){background:#28c840}
+    .code-line { display: flex; gap: 10px; padding: 4px 11px 11px; overflow-wrap: anywhere; word-break: break-word; }
+    .code-line span { opacity: .45; }
+    .meta {
+      width: 100%;
+      min-width: 0;
+      padding: 16px 20px 0;
+      border-top: 1px solid #ebeae6;
+    }
+    .meta p {
+      width: 100%;
+      min-width: 0;
+      margin: 0;
+      color: #5f5e59;
+      font-size: 13px;
+      line-height: 1.6;
+      writing-mode: horizontal-tb;
+      white-space: normal;
+      overflow-wrap: break-word;
+    }
+    .qmdp-pick-button {
+      position: relative;
+      z-index: 1;
+      width: calc(100% - 40px);
+      min-height: 44px;
+      margin: 14px 20px 20px;
+      border: 0;
+      border-radius: 9px;
+      color: #fff;
+      background: #1e1e1b;
+      font-weight: 700;
+      cursor: pointer;
+      white-space: normal;
+      writing-mode: horizontal-tb;
+    }
+
+    /* A · 刊物红：宋黑混排、章节编号、短红线，偏编辑部。 */
+    .dir-a .mock { background: #eee8df; }
+    .dir-a .wechat { color: #25211d; background: #fffdfa; font-family: -apple-system, BlinkMacSystemFont, "PingFang SC", sans-serif; }
+    .dir-a .cover { border-top: 8px solid #a64033; border-bottom: 1px solid #29231e; background: #f4eee5; }
+    .dir-a .cover-mark small { color: #a64033; font-family: ui-monospace, monospace; }
+    .dir-a .cover-mark b { font-family: "Songti SC", STSong, serif; font-weight: 700; }
+    .dir-a .chapter { display: flex; align-items: center; gap: 9px; margin: 30px 0 12px; color: #a64033; font: 800 10px/1 ui-monospace, monospace; letter-spacing: .13em; }
+    .dir-a .chapter::after { content: ""; width: 28px; height: 2px; background: #a64033; }
+    .dir-a h3 { margin-top: 10px; font-family: "Songti SC", STSong, serif; font-size: 21px; line-height: 1.35; text-align: left; }
+    .dir-a strong { color: #94382d; }
+    .dir-a blockquote { position: relative; padding: 18px 16px 14px; border-top: 1px solid #c9b9a8; border-bottom: 1px solid #c9b9a8; background: #f8f2ea; color: #57483d; }
+    .dir-a blockquote::before { content: "“"; position: absolute; top: -18px; right: 10px; color: #bd6d61; font: 48px/1 Georgia, serif; }
+    .dir-a blockquote p { margin: 0; font-size: 14px; }
+    .dir-a .code { color: #f7f1e8; background: #282522; }
+
+    /* B · 数字蓝：信息标签、清晰导览，偏产品与科技。 */
+    .dir-b .mock { background: #e7eef5; }
+    .dir-b .wechat { color: #172534; background: #fbfdff; font-family: -apple-system, BlinkMacSystemFont, "PingFang SC", sans-serif; }
+    .dir-b .cover { position: relative; justify-items: start; padding-left: 18px; background: #173a5e; color: #fff; }
+    .dir-b .cover::after { content: "01"; position: absolute; right: 13px; bottom: -14px; color: rgba(255,255,255,.12); font: 800 78px/1 ui-monospace, monospace; }
+    .dir-b .cover-mark { position: relative; z-index: 1; text-align: left; }
+    .dir-b .cover-mark small { color: #7fc7ff; }
+    .dir-b .chapter { margin: 30px 0 6px; color: #2871a9; font: 800 10px/1.2 ui-monospace, monospace; letter-spacing: .12em; }
+    .dir-b h3 { margin-top: 7px; padding-bottom: 9px; border-bottom: 3px solid #2871a9; color: #173a5e; font-size: 20px; line-height: 1.35; text-align: left; }
+    .dir-b strong { padding: 1px 3px; color: #145f97; background: #e2f2ff; }
+    .dir-b blockquote { padding: 15px 16px; border: 1px solid #bdd8eb; border-radius: 9px; background: #edf7fd; color: #244a66; }
+    .dir-b blockquote p { margin: 0; font-size: 14px; }
+    .dir-b .code { color: #d8edff; background: #102536; box-shadow: 4px 4px 0 #8fc9ef; }
+
+    /* C · 墨绿签：纸张、宋体标题、横向书签，偏人文与长期主义。 */
+    .dir-c .mock { background: #e9e6dd; }
+    .dir-c .wechat { color: #263029; background: #f9f7f0; font-family: -apple-system, BlinkMacSystemFont, "PingFang SC", sans-serif; }
+    .dir-c .cover { border: 1px solid #2e5c4a; color: #1f493b; background: #eff1e8; }
+    .dir-c .cover-mark small { color: #8a4b32; }
+    .dir-c .cover-mark b { font-family: "Songti SC", STSong, serif; font-weight: 650; }
+    .dir-c .chapter { display: inline-block; margin: 30px 0 9px; padding: 4px 8px; color: #f9f7f0; background: #2e5c4a; font: 700 10px/1.3 ui-monospace, monospace; letter-spacing: .12em; }
+    .dir-c h3 { margin-top: 6px; color: #1f493b; font-family: "Songti SC", STSong, serif; font-size: 22px; line-height: 1.35; text-align: left; }
+    .dir-c strong { color: #8a4b32; }
+    .dir-c blockquote { padding: 15px 0; border-top: 1px solid #789080; border-bottom: 1px solid #789080; color: #516157; font-family: "Songti SC", STSong, serif; }
+    .dir-c blockquote p { margin: 0; font-size: 15px; }
+    .dir-c .code { border: 1px solid #9ba89f; color: #263b31; background: #e8ece5; }
+
+    /* D · 柠黄标：高反差实色标签，偏年轻创作者。 */
+    .dir-d .mock { background: #ececec; }
+    .dir-d .wechat { color: #171717; background: #fff; font-family: -apple-system, BlinkMacSystemFont, "PingFang SC", sans-serif; }
+    .dir-d .cover { border: 2px solid #171717; background: #f3d843; box-shadow: 5px 5px 0 #171717; }
+    .dir-d .cover-mark small { color: #171717; }
+    .dir-d .cover-mark b { font-weight: 850; letter-spacing: -.04em; }
+    .dir-d .chapter { display: inline-block; margin: 30px 0 8px; padding: 3px 7px; border: 1px solid #171717; background: #fff; font: 800 10px/1.3 ui-monospace, monospace; letter-spacing: .1em; box-shadow: 2px 2px 0 #171717; }
+    .dir-d h3 { display: table; margin-top: 8px; padding: 5px 9px; color: #171717; background: #f3d843; font-size: 20px; line-height: 1.35; text-align: left; }
+    .dir-d strong { text-decoration: underline; text-decoration-color: #f3d843; text-decoration-thickness: 5px; text-underline-offset: -2px; }
+    .dir-d blockquote { padding: 15px 16px; border: 2px solid #171717; background: #fff8cb; box-shadow: 4px 4px 0 #171717; }
+    .dir-d blockquote p { margin: 0; font-size: 14px; }
+    .dir-d .code { border: 2px solid #171717; color: #171717; background: #f4f4f1; box-shadow: 4px 4px 0 #f3d843; }
+
+    @media (max-width: 840px) {
+      .intro { align-items: stretch; flex-direction: column; padding: 26px 16px 18px; }
+      .research-note { flex-basis: auto; }
+      .dials { grid-template-columns: 1fr; padding: 0 16px; }
+      .grid { grid-template-columns: 1fr; padding: 0 16px 44px; }
+      .mock { min-height: 560px; padding: 18px 12px; }
+      .phone { width: 100%; max-width: 356px; }
+    }
+    @media (prefers-reduced-motion: reduce) { * { scroll-behavior: auto !important; transition: none !important; } }
+  </style>
+</head>
+<body>
+  <header class="intro">
+    <div class="intro-copy">
+      <p class="eyebrow">WECHAT READING THEME / DIRECTION STUDY</p>
+      <h1>“简阅”不等于“没性格”</h1>
+      <p>四个方向都保留 8px 正文边距、左对齐 H2、16px 正文与可换行代码；差别在章节识别、编辑气质和品牌记忆点。</p>
+    </div>
+    <aside class="research-note">共同约束：只用微信更稳的实色、边框、圆角与阴影；避免依赖背景图片和复杂伪元素。每套只保留一个主色和一个辅助色。</aside>
+  </header>
+
+  <section class="dials" data-qmdp-dials aria-label="设计拨盘">
+    <label class="dial"><b>视觉冒险度 <output id="varianceOut" data-qmdp-output="variance">6</output></b><input id="variance" data-qmdp-dial="variance" type="range" min="1" max="10" value="6"></label>
+    <label class="dial"><b>动效强度 <output id="motionOut" data-qmdp-output="motion">1</output></b><input id="motion" data-qmdp-dial="motion" type="range" min="1" max="10" value="1"></label>
+    <label class="dial"><b>信息密度 <output id="densityOut" data-qmdp-output="density">6</output></b><input id="density" data-qmdp-dial="density" type="range" min="1" max="10" value="6"></label>
+  </section>
+
+  <main class="grid">
+    <article class="card dir-a" data-direction="A" data-name="刊物红" data-rec="true">
+      <header class="card-head"><div><div class="card-id">DIRECTION A</div><h2 data-direction-name>刊物红</h2></div><span class="badge">推荐</span></header>
+      <div class="mock"><div class="phone"><div class="phone-bar"><span>9:41</span><span>•••</span></div><div class="wechat">
+        <div class="cover"><div class="cover-mark"><small>QIAOMU / NOTES</small><b>把复杂的事<br>讲得更清楚</b></div></div>
+        <p>好排版不是把内容装饰得更满，而是让读者在一眼之内知道：<strong>这里讲什么，哪里最重要。</strong></p>
+        <div class="chapter">01 / 观点</div><h3>工具越来越强，判断反而更贵</h3>
+        <p>信息的成本已经接近于零。真正拉开差距的，是选择什么，以及为什么留下它。</p>
+        <blockquote><p>克制不是没有设计，而是只让真正有用的设计留下来。</p></blockquote>
+        <div class="code"><div class="code-top"><i></i><i></i><i></i></div><div class="code-line"><span>1</span><b>把行业报告变成一份可读、可复用的判断清单</b></div></div>
+      </div></div></div>
+      <div class="meta"><p>像一本当代中文刊物：宋体标题、砖红信号、章节编号。信息类文章有辨识度，又不会抢正文。</p></div>
+      <button class="qmdp-pick-button" type="button">选择 A · 刊物红</button>
+    </article>
+
+    <article class="card dir-b" data-direction="B" data-name="数字蓝">
+      <header class="card-head"><div><div class="card-id">DIRECTION B</div><h2 data-direction-name>数字蓝</h2></div></header>
+      <div class="mock"><div class="phone"><div class="phone-bar"><span>9:41</span><span>•••</span></div><div class="wechat">
+        <div class="cover"><div class="cover-mark"><small>FIELD NOTE · 01</small><b>把复杂的事<br>讲得更清楚</b></div></div>
+        <p>好排版不是把内容装饰得更满，而是让读者在一眼之内知道：<strong>这里讲什么，哪里最重要。</strong></p>
+        <div class="chapter">CHAPTER 01 / SIGNAL</div><h3>工具越来越强，判断反而更贵</h3>
+        <p>信息的成本已经接近于零。真正拉开差距的，是选择什么，以及为什么留下它。</p>
+        <blockquote><p>清晰的导航，比堆叠更多视觉元素更能提高阅读效率。</p></blockquote>
+        <div class="code"><div class="code-top"><i></i><i></i><i></i></div><div class="code-line"><span>1</span><b>把行业报告变成一份可读、可复用的判断清单</b></div></div>
+      </div></div></div>
+      <div class="meta"><p>像产品团队的研究简报：深蓝封面、章节导航、信息标签。更理性，更适合 AI 与工具文章。</p></div>
+      <button class="qmdp-pick-button" type="button">选择 B · 数字蓝</button>
+    </article>
+
+    <article class="card dir-c" data-direction="C" data-name="墨绿签">
+      <header class="card-head"><div><div class="card-id">DIRECTION C</div><h2 data-direction-name>墨绿签</h2></div></header>
+      <div class="mock"><div class="phone"><div class="phone-bar"><span>9:41</span><span>•••</span></div><div class="wechat">
+        <div class="cover"><div class="cover-mark"><small>乔木手记 · 2026</small><b>把复杂的事<br>讲得更清楚</b></div></div>
+        <p>好排版不是把内容装饰得更满，而是让读者在一眼之内知道：<strong>这里讲什么，哪里最重要。</strong></p>
+        <div class="chapter">第一章 · 判断</div><h3>工具越来越强，判断反而更贵</h3>
+        <p>信息的成本已经接近于零。真正拉开差距的，是选择什么，以及为什么留下它。</p>
+        <blockquote><p>慢一点没关系，重要的是把值得留下的东西写清楚。</p></blockquote>
+        <div class="code"><div class="code-top"><i></i><i></i><i></i></div><div class="code-line"><span>1</span><b>把行业报告变成一份可读、可复用的判断清单</b></div></div>
+      </div></div></div>
+      <div class="meta"><p>像一本有纸感的随身读物：米白、墨绿、书签式章节。温和耐看，更偏人文与长期主义。</p></div>
+      <button class="qmdp-pick-button" type="button">选择 C · 墨绿签</button>
+    </article>
+
+    <article class="card dir-d" data-direction="D" data-name="柠黄标">
+      <header class="card-head"><div><div class="card-id">DIRECTION D</div><h2 data-direction-name>柠黄标</h2></div></header>
+      <div class="mock"><div class="phone"><div class="phone-bar"><span>9:41</span><span>•••</span></div><div class="wechat">
+        <div class="cover"><div class="cover-mark"><small>QIAOMU / IDEA 01</small><b>把复杂的事<br>讲得更清楚</b></div></div>
+        <p>好排版不是把内容装饰得更满，而是让读者在一眼之内知道：<strong>这里讲什么，哪里最重要。</strong></p>
+        <div class="chapter">NO. 01 / 观点</div><h3>工具越来越强，判断反而更贵</h3>
+        <p>信息的成本已经接近于零。真正拉开差距的，是选择什么，以及为什么留下它。</p>
+        <blockquote><p>真正的重点要像荧光笔一样出现，但一次只划最值得记住的那句。</p></blockquote>
+        <div class="code"><div class="code-top"><i></i><i></i><i></i></div><div class="code-line"><span>1</span><b>把行业报告变成一份可读、可复用的判断清单</b></div></div>
+      </div></div></div>
+      <div class="meta"><p>像独立创作者的观点卡片：黑黄高反差、实色标题、硬边阴影。最醒目，也最年轻。</p></div>
+      <button class="qmdp-pick-button" type="button">选择 D · 柠黄标</button>
+    </article>
+  </main>
+
+  <script>
+    ['variance', 'motion', 'density'].forEach((id) => {
+      const input = document.getElementById(id);
+      const output = document.getElementById(id + 'Out');
+      input.addEventListener('input', () => {
+        output.value = input.value;
+        output.textContent = input.value;
+      });
+    });
+  </script>
+</body>
+</html>

@@ -1,5 +1,5 @@
 import { mapPostWithTags } from '@/lib/repositories/post-mappers'
-import type { Database } from '@/lib/repositories/schema'
+import { ensureSchema, type Database } from '@/lib/repositories/schema'
 import type { Post, PostWithTags } from '@/lib/repositories/types'
 
 // 全文搜索（FTS5，回退 LIKE）
@@ -12,6 +12,8 @@ export async function searchPosts(
   includeHidden = false,
   includeDeleted = false,
 ): Promise<PostWithTags[]> {
+  await ensureSchema(db)
+
   let results: Post[]
 
   const conditions: string[] = []

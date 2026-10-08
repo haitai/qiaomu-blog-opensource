@@ -48,6 +48,7 @@ interface ImageProfileItem {
 }
 
 interface GeneratedImageResult {
+  assetId?: number
   url: string
   alt: string
   revisedPrompt: string
@@ -93,6 +94,8 @@ function formatHistoryTime(timestamp: number) {
 
 interface ImageGenerationModalProps {
   open: boolean
+  active?: boolean
+  embedded?: boolean
   contextText?: string
   historyScope?: string
   referenceImageUrl?: string
@@ -100,12 +103,16 @@ interface ImageGenerationModalProps {
   defaultPlacementMode?: 'insert' | 'replace'
   closeOnGenerate?: boolean
   generationMode?: 'background' | 'foreground'
+  postId?: number | null
+  slug?: string | null
   onClose: () => void
   onInsert: (imageUrl: string, alt: string, placementMode?: 'insert' | 'replace') => void
 }
 
 export function ImageGenerationModal({
   open,
+  active = true,
+  embedded = false,
   contextText = '',
   historyScope = DEFAULT_HISTORY_SCOPE,
   referenceImageUrl,
@@ -113,6 +120,8 @@ export function ImageGenerationModal({
   defaultPlacementMode = 'insert',
   closeOnGenerate = true,
   generationMode = 'background',
+  postId,
+  slug,
   onClose,
   onInsert,
 }: ImageGenerationModalProps) {
@@ -283,16 +292,22 @@ export function ImageGenerationModal({
       setPlacementMode(defaultPlacementMode)
       setTemplatesExpanded(false)
     })
-    const timer = window.setTimeout(() => promptRef.current?.focus(), 50)
 
     return () => {
       window.cancelAnimationFrame(frame)
-      window.clearTimeout(timer)
     }
   }, [defaultPlacementMode, open, referenceImageUrl])
 
   useEffect(() => {
+    if (!open || !active) return
+
+    const timer = window.setTimeout(() => promptRef.current?.focus(), 50)
+    return () => window.clearTimeout(timer)
+  }, [active, open])
+
+  useEffect(() => {
     if (!open) return
+    if (embedded) return
 
     const handleKeyDown = (event: KeyboardEvent) => {
       if (event.key === 'Escape') onClose()
@@ -310,10 +325,10 @@ export function ImageGenerationModal({
       document.body.style.overscrollBehavior = previousOverscroll
       document.removeEventListener('keydown', handleKeyDown)
     }
-  }, [open, onClose])
+  }, [embedded, open, onClose])
 
   useEffect(() => {
-    if (!open) return
+    if (!open || !active) return
 
     const measureTemplates = () => {
       const node = templatesRef.current
@@ -328,7 +343,7 @@ export function ImageGenerationModal({
       window.cancelAnimationFrame(frame)
       window.removeEventListener('resize', measureTemplates)
     }
-  }, [actions, open])
+  }, [actions, active, open])
 
   const requestImage = useCallback(async () => {
     const res = await fetch('/api/editor/ai-image', {
@@ -343,6 +358,8 @@ export function ImageGenerationModal({
         profileId: selectedProfileId,
         referenceImageUrl,
         inputFidelity: referenceImageUrl ? 'high' : undefined,
+        postId,
+        slug,
       }),
     })
 
@@ -364,6 +381,8 @@ export function ImageGenerationModal({
     selectedAspectRatio,
     selectedProfileId,
     selectedResolution,
+    postId,
+    slug,
   ])
 
   const handleGenerate = useCallback(async () => {
@@ -417,30 +436,31 @@ export function ImageGenerationModal({
 
   if (!open) return null
 
-  return (
+  const shell = (
     <div
-      className="fixed inset-0 z-[70] bg-black/45 px-3 py-3 sm:px-4 sm:py-4"
-      onClick={(event) => {
-        if (event.target === event.currentTarget) onClose()
-      }}
+      className={`flex h-full min-h-0 w-full flex-col overflow-hidden ${
+        embedded
+          ? 'bg-[var(--editor-panel)]'
+          : 'max-w-5xl max-h-[calc(100vh-1.5rem)] rounded-[28px] border border-[var(--editor-line)] bg-[var(--editor-panel)] shadow-[0_24px_80px_rgba(0,0,0,0.28)]'
+      }`}
     >
-      <div className="flex min-h-full items-center justify-center">
-        <div className="flex w-full max-w-5xl max-h-[calc(100vh-1.5rem)] flex-col overflow-hidden rounded-[28px] border border-[var(--editor-line)] bg-[var(--editor-panel)] shadow-[0_24px_80px_rgba(0,0,0,0.28)]">
-          <div className="flex items-start justify-between gap-4 border-b border-[var(--editor-line)] px-5 py-4">
-            <div className="min-w-0">
-              <div className="text-base font-semibold text-[var(--editor-ink)]">生成图片</div>
-            </div>
-            <button
-              type="button"
-              onClick={onClose}
-              className="inline-flex h-9 w-9 shrink-0 items-center justify-center rounded-xl text-[var(--editor-muted)] transition hover:bg-[var(--editor-soft)] hover:text-[var(--editor-ink)]"
-              aria-label="关闭"
-            >
-              <X className="h-4 w-4" />
-            </button>
+      {!embedded ? (
+        <div className="flex items-start justify-between gap-4 border-b border-[var(--editor-line)] px-5 py-4">
+          <div className="min-w-0">
+            <div className="text-base font-semibold text-[var(--editor-ink)]">生成图片</div>
           </div>
+          <button
+            type="button"
+            onClick={onClose}
+            className="inline-flex h-9 w-9 shrink-0 items-center justify-center rounded-xl text-[var(--editor-muted)] transition hover:bg-[var(--editor-soft)] hover:text-[var(--editor-ink)]"
+            aria-label="关闭"
+          >
+            <X className="h-4 w-4" />
+          </button>
+        </div>
+      ) : null}
 
-          <div className="grid min-h-0 flex-1 lg:grid-cols-[minmax(0,1.1fr)_minmax(320px,0.9fr)]">
+      <div className="grid min-h-0 flex-1 lg:grid-cols-[minmax(0,1.1fr)_minmax(320px,0.9fr)]">
             <div className="min-h-0 border-b border-[var(--editor-line)] lg:border-b-0 lg:border-r">
               <div className="flex h-full min-h-0 flex-col">
                 <div className="min-h-0 flex-1 space-y-5 overflow-y-auto px-5 py-5">
@@ -787,7 +807,22 @@ export function ImageGenerationModal({
               </div>
             </div>
           </div>
-        </div>
+    </div>
+  )
+
+  if (embedded) {
+    return shell
+  }
+
+  return (
+    <div
+      className="fixed inset-0 z-[70] bg-black/45 px-3 py-3 sm:px-4 sm:py-4"
+      onClick={(event) => {
+        if (event.target === event.currentTarget) onClose()
+      }}
+    >
+      <div className="flex min-h-full items-center justify-center">
+        {shell}
       </div>
     </div>
   )

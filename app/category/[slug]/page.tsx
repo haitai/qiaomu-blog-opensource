@@ -6,6 +6,7 @@ import { SiteHeader } from '@/components/SiteHeader'
 import { SiteFooter } from '@/components/SiteFooter'
 import { Pagination } from '@/components/Pagination'
 import { getSiteHeaderData } from '@/lib/site'
+import { getCachedPublicData } from '@/lib/public-site-cache'
 import { getSiteUrl } from '@/lib/site-config'
 
 const PAGE_SIZE = 25
@@ -61,16 +62,28 @@ export default async function CategoryPage({
 
   const env = await getAppCloudflareEnv()
   if (!env?.DB) notFound()
+  const db = env.DB
 
-  const categories = await getPublicCategories(env.DB)
-  const category = categories.find((item) => item.slug === slug)
-  if (!category) notFound()
+  const data = await getCachedPublicData(
+    env,
+    `category:${slug}:page:${currentPage}`,
+    async () => {
+      const categories = await getPublicCategories(db)
+      const category = categories.find((item) => item.slug === slug)
+      if (!category) return null
 
-  const [posts, totalCount, headerData] = await Promise.all([
-    getPostsByCategory(env.DB, category.name, PAGE_SIZE, (currentPage - 1) * PAGE_SIZE),
-    getPostsCountByCategory(env.DB, category.name),
-    getSiteHeaderData(env.DB),
-  ])
+      const [posts, totalCount, headerData] = await Promise.all([
+        getPostsByCategory(db, category.name, PAGE_SIZE, (currentPage - 1) * PAGE_SIZE),
+        getPostsCountByCategory(db, category.name),
+        getSiteHeaderData(db),
+      ])
+
+      return { category, posts, totalCount, headerData }
+    },
+  )
+  if (!data) notFound()
+
+  const { category, posts, totalCount, headerData } = data
 
   const totalPages = Math.max(1, Math.ceil(totalCount / PAGE_SIZE))
 

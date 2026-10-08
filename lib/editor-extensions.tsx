@@ -16,7 +16,6 @@ import {
   TaskItem,
   TaskList,
   TextStyle,
-  TiptapLink,
   TiptapUnderline,
   createImageUpload,
   handleImagePaste,
@@ -26,14 +25,15 @@ import {
   type SuggestionItem,
   useEditor,
 } from 'novel'
+import { CodeBlockLowlight } from '@tiptap/extension-code-block-lowlight'
+import { common, createLowlight } from 'lowlight'
 import { Table, TableRow, TableCell, TableHeader } from '@tiptap/extension-table'
 import Youtube from '@tiptap/extension-youtube'
 import GlobalDragHandle from 'tiptap-extension-global-drag-handle'
 import AutoJoiner from 'tiptap-extension-auto-joiner'
 import { Markdown } from 'tiptap-markdown'
-import { DOMParser as PMDOMParser } from '@tiptap/pm/model'
+import { DOMParser as PMDOMParser, DOMSerializer } from '@tiptap/pm/model'
 import type { EditorView } from '@tiptap/pm/view'
-import markdownit from 'markdown-it'
 import { useEffect, useState } from 'react'
 import {
   AlignLeft,
@@ -41,6 +41,7 @@ import {
   CheckSquare,
   ChevronDown,
   Code2,
+  Copy,
   Eraser,
   ExternalLink,
   Heading1,
@@ -52,30 +53,102 @@ import {
   ListOrdered,
   MoreHorizontal,
   Paintbrush2,
+  PanelsTopLeft,
   Quote,
   RemoveFormatting,
+  Scissors,
   Sigma,
+  Trash2,
   WandSparkles,
 } from 'lucide-react'
 import { TwitterNode } from './twitter-extension'
 import { ResizableImage, type ResizableImageActionHandlers } from './resizable-image'
-import { MathNode } from './math-extension'
+import { InlineMathNode, MathNode } from './math-extension'
 import { AudioNode } from './audio-extension'
 import { VideoNode } from './video-extension'
 import {
   type InputModalDetail,
   type TriggerAIModalDetail,
   type TriggerImageGenerationDetail,
+  type TriggerCollageModalDetail,
   TRIGGER_AI_MODAL_EVENT,
+  TRIGGER_COLLAGE_MODAL_EVENT,
   TRIGGER_FILE_UPLOAD_EVENT,
   TRIGGER_IMAGE_GENERATION_EVENT,
   TRIGGER_IMAGE_UPLOAD_EVENT,
   TRIGGER_INPUT_MODAL_EVENT,
 } from './editor-events'
 import { shouldShowEditorBubble } from './editor-bubble'
+import { EditorLink } from './editor-link'
 import { createDefaultTableContent, hasMarkdownTable, normalizeUrl } from './editor-utils'
+import { hasEditorMarkdownMath, renderMarkdownToEditorHtml } from './editor-markdown'
+import { formatChineseCopywritingText } from './chinese-copywriting'
+import { shouldRunEditorCommandNavigation } from './editor-keyboard'
+import {
+  WechatBadgeGroupNode,
+  WechatCalloutNode,
+  WechatImageSliderNode,
+  WechatInfoGridNode,
+  WechatProfileNode,
+  WechatQRCodeNode,
+  createWechatBadgeGroupContent,
+  createWechatCalloutContent,
+  createWechatImageSliderContent,
+  createWechatInfoGridContent,
+  createWechatProfileContent,
+  createWechatQRCodeContent,
+} from './wechat-editor-nodes'
 
-const md = markdownit({ html: true })
+const lowlight = createLowlight(common)
+const COPY_URL_ATTRIBUTES = [
+  ['img', 'src'],
+  ['a', 'href'],
+  ['audio', 'src'],
+  ['video', 'src'],
+  ['source', 'src'],
+  ['iframe', 'src'],
+] as const
+
+function getEditorCopyBaseUrl() {
+  return process.env.NEXT_PUBLIC_SITE_URL?.trim() || window.location.origin
+}
+
+function shouldAbsolutizeCopiedUrl(value: string) {
+  const trimmed = value.trim()
+  if (!trimmed || trimmed.startsWith('#')) return false
+  if (/^(?:[a-z]+:|\/\/)/i.test(trimmed)) return false
+  return true
+}
+
+function absolutizeCopiedHtmlUrls(root: HTMLElement, baseUrl: string) {
+  for (const [selector, attribute] of COPY_URL_ATTRIBUTES) {
+    for (const element of Array.from(root.querySelectorAll<HTMLElement>(selector))) {
+      const value = element.getAttribute(attribute)
+      if (!value || !shouldAbsolutizeCopiedUrl(value)) continue
+      element.setAttribute(attribute, new URL(value, baseUrl).toString())
+    }
+  }
+}
+
+function handleEditorCopy(view: EditorView, event: ClipboardEvent) {
+  const { state } = view
+  const { selection } = state
+  if (selection.empty || !event.clipboardData) return false
+
+  const slice = selection.content()
+  const container = document.createElement('div')
+  const serializer = DOMSerializer.fromSchema(state.schema)
+  container.appendChild(serializer.serializeFragment(slice.content, { document }))
+  absolutizeCopiedHtmlUrls(container, getEditorCopyBaseUrl())
+
+  const html = container.innerHTML
+  if (!html.trim()) return false
+
+  event.preventDefault()
+  event.clipboardData.setData('text/html', html)
+  event.clipboardData.setData('text/plain', state.doc.textBetween(selection.from, selection.to, '\n\n'))
+  return true
+}
 
 function CommandIcon({ label }: { label: string }) {
   return (
@@ -265,6 +338,71 @@ const BG_COLORS = [
   { label: '灰色', value: '#f3f4f6' },
 ]
 
+const CHINESE_COPYWRITING_SKIP_NODES = new Set(['codeBlock', 'mathBlock', 'inlineMath'])
+const CHINESE_COPYWRITING_SKIP_MARKS = new Set(['code', 'link'])
+
+export type ChineseCopywritingScope = 'selection' | 'block' | 'document'
+
+function getChineseCopywritingRange(editor: EditorInstance, scope: ChineseCopywritingScope) {
+  const { state } = editor
+  const { selection } = state
+
+  if (scope === 'document') {
+    return { from: 0, to: state.doc.content.size }
+  }
+
+  if (scope === 'selection') {
+    if (selection.empty) return null
+    return { from: selection.from, to: selection.to }
+  }
+
+  return {
+    from: selection.$from.start(),
+    to: selection.$from.end(),
+  }
+}
+
+export function formatChineseCopywritingInEditor(
+  editor: EditorInstance,
+  scope: ChineseCopywritingScope = 'selection',
+): boolean {
+  const { state, view } = editor
+  const range = getChineseCopywritingRange(editor, scope)
+  if (!range || range.from >= range.to) return false
+
+  const { from, to } = range
+  const changes: Array<{ from: number; to: number; text: string }> = []
+
+  state.doc.nodesBetween(from, to, (node, pos, parent) => {
+    if (CHINESE_COPYWRITING_SKIP_NODES.has(node.type.name)) return false
+    if (!node.isText || !node.text) return true
+    if (parent && CHINESE_COPYWRITING_SKIP_NODES.has(parent.type.name)) return false
+    if (node.marks.some((mark) => CHINESE_COPYWRITING_SKIP_MARKS.has(mark.type.name))) return true
+
+    const nodeFrom = Math.max(from, pos)
+    const nodeTo = Math.min(to, pos + node.nodeSize)
+    const textFrom = nodeFrom - pos
+    const textTo = nodeTo - pos
+    const original = node.text.slice(textFrom, textTo)
+    const formatted = formatChineseCopywritingText(original)
+
+    if (formatted !== original) {
+      changes.push({ from: nodeFrom, to: nodeTo, text: formatted })
+    }
+
+    return true
+  })
+
+  if (changes.length === 0) return false
+
+  let tr = state.tr
+  for (const change of changes.reverse()) {
+    tr = tr.insertText(change.text, change.from, change.to)
+  }
+  view.dispatch(tr.scrollIntoView())
+  return true
+}
+
 export {
   TRIGGER_AI_MODAL_EVENT,
   TRIGGER_FILE_UPLOAD_EVENT,
@@ -287,7 +425,98 @@ export const suggestionItems = createSuggestionItems([
   { title: '待办列表', description: '插入可以勾选的任务清单。', searchTerms: ['todo', 'task', 'checkbox'], icon: <CommandIcon label="[]" />, command: ({ editor, range }) => { editor.chain().focus().deleteRange(range).toggleTaskList().run() } },
   { title: '引用', description: '高亮一段需要单独强调的话。', searchTerms: ['quote', 'blockquote'], icon: <CommandIcon label='"' />, command: ({ editor, range }) => { editor.chain().focus().deleteRange(range).setParagraph().toggleBlockquote().run() } },
   { title: '代码块', description: '插入一段多行代码。', searchTerms: ['code', 'snippet', 'codeblock'], icon: <CommandIcon label="</>" />, command: ({ editor, range }) => { editor.chain().focus().deleteRange(range).toggleCodeBlock().run() } },
-  { title: '表格', description: '插入一个 3×3 的表格。', searchTerms: ['table', 'grid'], icon: <CommandIcon label="▦" />, command: ({ editor, range }) => { editor.chain().focus().deleteRange(range).insertContent(createDefaultTableContent()).run() } },
+  {
+    title: 'Mermaid 流程图',
+    description: '插入可渲染的 Mermaid 图表代码块。',
+    searchTerms: ['mermaid', 'diagram', 'flowchart', '流程图', '图表'],
+    icon: <CommandIcon label="M" />,
+    command: ({ editor, range }) => {
+      editor.chain().focus().deleteRange(range).insertContent({
+        type: 'codeBlock',
+        attrs: { language: 'mermaid' },
+        content: [{ type: 'text', text: 'graph TD\n  A --> B' }],
+      }).run()
+    },
+  },
+  {
+    title: '表格',
+    description: '插入一个 3×3 的表格。',
+    searchTerms: ['table', 'grid'],
+    icon: <CommandIcon label="▦" />,
+    command: ({ editor, range }) => { editor.chain().focus().deleteRange(range).insertContent(createDefaultTableContent()).run() },
+  },
+  {
+    title: '公众号提示块',
+    description: '发布到公众号时渲染为醒目的提示卡片。',
+    searchTerms: ['wechat', 'note', 'callout', 'alert', '提示', '公众号'],
+    icon: <CommandIcon label="!" />,
+    command: ({ editor, range }) => {
+      editor.chain().focus().deleteRange(range).insertContent(createWechatCalloutContent('note')).run()
+    },
+  },
+  {
+    title: '公众号警告块',
+    description: '发布到公众号时渲染为风险或注意事项卡片。',
+    searchTerms: ['wechat', 'warning', 'risk', 'alert', '注意', '风险', '公众号'],
+    icon: <CommandIcon label="⚠" />,
+    command: ({ editor, range }) => {
+      editor.chain().focus().deleteRange(range).insertContent(createWechatCalloutContent('warning')).run()
+    },
+  },
+  {
+    title: '公众号结论块',
+    description: '发布到公众号时渲染为结论强调块。',
+    searchTerms: ['wechat', 'conclusion', 'summary', '结论', '总结', '公众号'],
+    icon: <CommandIcon label="✓" />,
+    command: ({ editor, range }) => {
+      editor.chain().focus().deleteRange(range).insertContent(createWechatCalloutContent('conclusion')).run()
+    },
+  },
+  {
+    title: '作者卡',
+    description: '插入公众号作者介绍卡。',
+    searchTerms: ['wechat', 'profile', 'author', '作者', '名片', '公众号'],
+    icon: <CommandIcon label="乔" />,
+    command: ({ editor, range }) => {
+      editor.chain().focus().deleteRange(range).insertContent(createWechatProfileContent()).run()
+    },
+  },
+  {
+    title: '二维码卡',
+    description: '插入公众号二维码引导卡。',
+    searchTerms: ['wechat', 'qr', 'qrcode', '二维码', '关注', '公众号'],
+    icon: <CommandIcon label="QR" />,
+    command: ({ editor, range }) => {
+      editor.chain().focus().deleteRange(range).insertContent(createWechatQRCodeContent()).run()
+    },
+  },
+  {
+    title: '徽章组',
+    description: '插入适合公众号摘要信息的标签徽章。',
+    searchTerms: ['wechat', 'badge', 'tag', '标签', '徽章', '公众号'],
+    icon: <CommandIcon label="#" />,
+    command: ({ editor, range }) => {
+      editor.chain().focus().deleteRange(range).insertContent(createWechatBadgeGroupContent()).run()
+    },
+  },
+  {
+    title: '信息网格',
+    description: '插入发布到公众号时更好读的信息卡组。',
+    searchTerms: ['wechat', 'grid', 'info', 'card', '信息', '卡片', '公众号'],
+    icon: <CommandIcon label="▤" />,
+    command: ({ editor, range }) => {
+      editor.chain().focus().deleteRange(range).insertContent(createWechatInfoGridContent()).run()
+    },
+  },
+  {
+    title: '滑动图组',
+    description: '插入发布到公众号时可横向滑动的图片组。',
+    searchTerms: ['wechat', 'slider', 'gallery', 'image', '图集', '滑动', '公众号'],
+    icon: <CommandIcon label="⇄" />,
+    command: ({ editor, range }) => {
+      editor.chain().focus().deleteRange(range).insertContent(createWechatImageSliderContent()).run()
+    },
+  },
   { title: '分隔线', description: '用一条线把内容切成两个段落。', searchTerms: ['divider', 'hr', 'line'], icon: <CommandIcon label="—" />, command: ({ editor, range }) => { editor.chain().focus().deleteRange(range).setHorizontalRule().run() } },
   {
     title: '生成图片',
@@ -313,6 +542,20 @@ export const suggestionItems = createSuggestionItems([
     command: ({ editor, range }) => {
       editor.chain().focus().deleteRange(range).run()
       window.dispatchEvent(new CustomEvent(TRIGGER_IMAGE_UPLOAD_EVENT))
+    },
+  },
+  {
+    title: '拼图',
+    description: '合成多张图片后插入。',
+    searchTerms: ['collage', 'compose', 'canvas', '拼图', '合图', '组图', '长图', '图片拼接'],
+    icon: <PanelsTopLeft className="h-4 w-4 text-[var(--editor-ink)]" />,
+    command: ({ editor, range }) => {
+      editor.chain().focus().deleteRange(range).run()
+      window.dispatchEvent(new CustomEvent<TriggerCollageModalDetail>(TRIGGER_COLLAGE_MODAL_EVENT, {
+        detail: {
+          insertPos: range.from,
+        },
+      }))
     },
   },
   {
@@ -382,14 +625,19 @@ export interface EditorExtensionOptions {
 
 export function createEditorExtensions(options: EditorExtensionOptions = {}) {
   return [
-    StarterKit.configure({ heading: { levels: [1, 2, 3] } }),
+    StarterKit.configure({ heading: { levels: [1, 2, 3] }, codeBlock: false }),
+    CodeBlockLowlight.configure({
+      lowlight,
+      defaultLanguage: 'plaintext',
+      HTMLAttributes: { class: 'code-block-lowlight' },
+    }),
     TextStyle,
     Color,
     HighlightExtension,
     CharacterCount,
     ResizableImage.configure({ imageActions: options.imageActions ?? {} } as never),
     TiptapUnderline,
-    TiptapLink.configure({ openOnClick: false, autolink: true, linkOnPaste: true }),
+    EditorLink.configure({ openOnClick: false, autolink: true, linkOnPaste: true }),
     TaskList,
     TaskItem.configure({ nested: true }),
     Table.configure({ resizable: false, HTMLAttributes: { class: 'tiptap-table' } }),
@@ -403,12 +651,32 @@ export function createEditorExtensions(options: EditorExtensionOptions = {}) {
     }),
     TwitterNode,
     MathNode,
+    InlineMathNode,
     AudioNode,
     VideoNode,
+    WechatCalloutNode,
+    WechatProfileNode,
+    WechatQRCodeNode,
+    WechatBadgeGroupNode,
+    WechatInfoGridNode,
+    WechatImageSliderNode,
     Markdown.configure({ html: true, transformPastedText: true, transformCopiedText: true }),
     GlobalDragHandle.configure({
-      dragHandleWidth: 24,
+      dragHandleWidth: 36,
       scrollTreshold: 100,
+      customNodes: [
+        'image',
+        'video',
+        'audio',
+        'twitter',
+        'math',
+        'wechatCallout',
+        'wechatProfile',
+        'wechatQRCode',
+        'wechatBadgeGroup',
+        'wechatInfoGrid',
+        'wechatImageSlider',
+      ],
     }),
     AutoJoiner.configure({
       elementsToJoin: ['bulletList', 'orderedList'],
@@ -423,6 +691,7 @@ export function buildEditorProps(
   onImageUpload?: (file: File) => Promise<string>,
   onNonImageFile?: (file: File) => void,
   contentClassName = '',
+  onCompositionEnd?: (view: EditorView) => void,
 ) {
   const collectFiles = (listLike: FileList | File[] | null | undefined) => {
     if (!listLike) return [] as File[]
@@ -490,9 +759,9 @@ export function buildEditorProps(
       }
 
       const plainText = event.clipboardData?.getData('text/plain') ?? ''
-      if (hasMarkdownTable(plainText)) {
+      if (hasMarkdownTable(plainText) || hasEditorMarkdownMath(plainText)) {
         event.preventDefault()
-        const html = md.render(plainText)
+        const html = renderMarkdownToEditorHtml(plainText)
         const { state, dispatch } = view
         const wrapper = document.createElement('div')
         wrapper.innerHTML = html
@@ -560,7 +829,12 @@ export function buildEditorProps(
       return true
     },
     handleDOMEvents: {
-      keydown: (_view: unknown, event: KeyboardEvent) => handleCommandNavigation(event),
+      compositionend: (view: EditorView) => {
+        if (onCompositionEnd) queueMicrotask(() => onCompositionEnd(view))
+        return false
+      },
+      keydown: (_view: unknown, event: KeyboardEvent) => handleEditorCommandNavigation(event),
+      copy: (view: EditorView, event: ClipboardEvent) => handleEditorCopy(view, event),
       click: (_view: unknown, event: MouseEvent) => {
         if (event.metaKey || event.ctrlKey) {
           const target = event.target as HTMLElement
@@ -574,6 +848,11 @@ export function buildEditorProps(
     },
     attributes: { class: ['novel-prose', contentClassName].filter(Boolean).join(' ') },
   }
+}
+
+function handleEditorCommandNavigation(event: KeyboardEvent) {
+  if (!shouldRunEditorCommandNavigation(event)) return false
+  return handleCommandNavigation(event) ?? false
 }
 
 export function FormattingBubble() {
@@ -654,6 +933,34 @@ export function FormattingBubble() {
     }, 50)
   }
 
+  const copySelectedText = async () => {
+    const { from, to } = editor.state.selection
+    const selectedText = editor.state.doc.textBetween(from, to, '\n\n').trim()
+    if (!selectedText) return
+
+    try {
+      await navigator.clipboard.writeText(selectedText)
+    } catch {}
+  }
+
+  const cutSelectedText = async () => {
+    await copySelectedText()
+    editor.chain().focus().deleteSelection().run()
+    setMode('main')
+  }
+
+  const deleteSelectedText = () => {
+    editor.chain().focus().deleteSelection().run()
+    setMode('main')
+  }
+
+  const formatSelectedCopywriting = () => {
+    if (formatChineseCopywritingInEditor(editor, 'selection')) {
+      editor.chain().focus().run()
+    }
+    setMode('main')
+  }
+
   const currentTextOption = TEXT_OPTIONS.find((o) => o.isActive(editor))
   const currentColor = (editor.getAttributes('textStyle').color as string | undefined) ?? ''
   const currentHighlight = (editor.getAttributes('highlight').color as string | undefined) ?? ''
@@ -686,6 +993,10 @@ export function FormattingBubble() {
 
         <BubbleIconButton label="生成图片" onClick={openImageGenerationModal}>
           <ImagePlus className="h-4 w-4" />
+        </BubbleIconButton>
+
+        <BubbleIconButton label="整理选中文案排版" onClick={formatSelectedCopywriting}>
+          <span className="text-sm font-semibold">排</span>
         </BubbleIconButton>
 
         <div className="mx-0.5 h-5 w-px bg-[var(--editor-line)]" />
@@ -971,29 +1282,59 @@ export function FormattingBubble() {
               </div>
 
               <div className="mt-2 border-t border-[var(--editor-line)] pt-2">
-              <button
-                type="button"
-                onMouseDown={(e) => e.preventDefault()}
-                onClick={() => {
-                  setMode('main')
-                  window.dispatchEvent(new CustomEvent<InputModalDetail>(TRIGGER_INPUT_MODAL_EVENT, {
-                    detail: {
-                      title: '插入 LaTeX 数学公式',
-                      placeholder: 'E = mc^2',
-                      callback: (latex) => {
-                        editor.commands.insertContent({
-                          type: 'mathBlock',
-                          attrs: { latex, displayMode: true },
-                        })
+                <button
+                  type="button"
+                  onMouseDown={(e) => e.preventDefault()}
+                  onClick={() => {
+                    void copySelectedText()
+                    setMode('main')
+                  }}
+                  className="flex w-full items-center gap-2 rounded-lg px-3 py-2 text-sm text-[var(--editor-ink)] transition hover:bg-[var(--editor-soft)]"
+                >
+                  <Copy className="h-4 w-4" />
+                  <span>复制选区</span>
+                </button>
+                <button
+                  type="button"
+                  onMouseDown={(e) => e.preventDefault()}
+                  onClick={() => { void cutSelectedText() }}
+                  className="flex w-full items-center gap-2 rounded-lg px-3 py-2 text-sm text-[var(--editor-ink)] transition hover:bg-[var(--editor-soft)]"
+                >
+                  <Scissors className="h-4 w-4" />
+                  <span>剪切选区</span>
+                </button>
+                <button
+                  type="button"
+                  onMouseDown={(e) => e.preventDefault()}
+                  onClick={deleteSelectedText}
+                  className="flex w-full items-center gap-2 rounded-lg px-3 py-2 text-sm text-rose-600 transition hover:bg-rose-50"
+                >
+                  <Trash2 className="h-4 w-4" />
+                  <span>删除选区</span>
+                </button>
+                <button
+                  type="button"
+                  onMouseDown={(e) => e.preventDefault()}
+                  onClick={() => {
+                    setMode('main')
+                    window.dispatchEvent(new CustomEvent<InputModalDetail>(TRIGGER_INPUT_MODAL_EVENT, {
+                      detail: {
+                        title: '插入 LaTeX 数学公式',
+                        placeholder: 'E = mc^2',
+                        callback: (latex) => {
+                          editor.commands.insertContent({
+                            type: 'mathBlock',
+                            attrs: { latex, displayMode: true },
+                          })
+                        },
                       },
-                    },
-                  }))
-                }}
-                className="flex w-full items-center gap-2 rounded-lg px-3 py-2 text-sm text-[var(--editor-ink)] transition hover:bg-[var(--editor-soft)]"
-              >
-                <Sigma className="h-4 w-4" />
-                <span>数学公式</span>
-              </button>
+                    }))
+                  }}
+                  className="flex w-full items-center gap-2 rounded-lg px-3 py-2 text-sm text-[var(--editor-ink)] transition hover:bg-[var(--editor-soft)]"
+                >
+                  <Sigma className="h-4 w-4" />
+                  <span>数学公式</span>
+                </button>
               </div>
             </div>
           )}

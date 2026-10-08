@@ -96,7 +96,7 @@ export function AiImageActionsManager() {
   const handleSave = async () => {
     if (!editAction) return
 
-    if (!editAction.action_key?.trim() || !editAction.label?.trim() || !editAction.description?.trim() || !editAction.prompt?.trim()) {
+    if (!editAction.action_key?.trim() || !editAction.label?.trim() || !editAction.prompt?.trim()) {
       toast.error('请填写所有必填字段')
       return
     }
@@ -108,7 +108,7 @@ export function AiImageActionsManager() {
         ...editAction,
         action_key: editAction.action_key?.trim(),
         label: editAction.label?.trim(),
-        description: editAction.description?.trim(),
+        description: editAction.description?.trim() || '',
         prompt: editAction.prompt?.trim(),
         aspect_ratio: editAction.aspect_ratio || 'auto',
         resolution: editAction.resolution || 'auto',
@@ -300,47 +300,44 @@ export function AiImageActionsManager() {
       </div>
 
       {editAction && (
-        <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/30" onClick={() => setEditAction(null)}>
-          <div className="mx-4 w-full max-w-2xl rounded-xl border border-[var(--editor-line)] bg-[var(--editor-panel)] p-6 shadow-xl" onClick={(event) => event.stopPropagation()}>
-            <h3 className="mb-4 text-lg font-semibold text-[var(--editor-ink)]">
-              {isNew ? '新增图片提示' : '编辑图片提示'}
-            </h3>
+        <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/30 p-4" onClick={() => setEditAction(null)}>
+          <div
+            className="flex max-h-[calc(100dvh-2rem)] w-full max-w-3xl flex-col overflow-hidden rounded-xl border border-[var(--editor-line)] bg-[var(--editor-panel)] shadow-xl"
+            onClick={(event) => event.stopPropagation()}
+          >
+            <div className="shrink-0 border-b border-[var(--editor-line)] px-5 py-4">
+              <h3 className="text-lg font-semibold text-[var(--editor-ink)]">
+                {isNew ? '新增图片提示' : '编辑图片提示'}
+              </h3>
+            </div>
 
-            <div className="space-y-3">
-              <div>
-                <label className="mb-1 block text-sm font-medium text-[var(--editor-ink)]">提示标识 *</label>
-                <input
-                  type="text"
-                  value={editAction.action_key || ''}
-                  onChange={(event) => setEditAction({ ...editAction, action_key: event.target.value })}
-                  className="w-full rounded-lg border border-[var(--editor-line)] bg-[var(--background)] px-3 py-2 text-sm text-[var(--editor-ink)] outline-none focus:border-[var(--editor-accent)]"
-                />
-              </div>
+            <div className="min-h-0 flex-1 space-y-4 overflow-y-auto px-5 py-4">
+              <div className="grid grid-cols-1 gap-3 sm:grid-cols-2">
+                <div>
+                  <label className="mb-1 block text-sm font-medium text-[var(--editor-ink)]">提示标识 *</label>
+                  <input
+                    type="text"
+                    value={editAction.action_key || ''}
+                    onChange={(event) => setEditAction({ ...editAction, action_key: event.target.value })}
+                    className="w-full rounded-lg border border-[var(--editor-line)] bg-[var(--background)] px-3 py-2 text-sm text-[var(--editor-ink)] outline-none focus:border-[var(--editor-accent)]"
+                  />
+                </div>
 
-              <div>
-                <label className="mb-1 block text-sm font-medium text-[var(--editor-ink)]">名称 *</label>
-                <input
-                  type="text"
-                  value={editAction.label || ''}
-                  onChange={(event) => setEditAction({ ...editAction, label: event.target.value })}
-                  className="w-full rounded-lg border border-[var(--editor-line)] bg-[var(--background)] px-3 py-2 text-sm text-[var(--editor-ink)] outline-none focus:border-[var(--editor-accent)]"
-                />
-              </div>
-
-              <div>
-                <label className="mb-1 block text-sm font-medium text-[var(--editor-ink)]">描述 *</label>
-                <input
-                  type="text"
-                  value={editAction.description || ''}
-                  onChange={(event) => setEditAction({ ...editAction, description: event.target.value })}
-                  className="w-full rounded-lg border border-[var(--editor-line)] bg-[var(--background)] px-3 py-2 text-sm text-[var(--editor-ink)] outline-none focus:border-[var(--editor-accent)]"
-                />
+                <div>
+                  <label className="mb-1 block text-sm font-medium text-[var(--editor-ink)]">名称 *</label>
+                  <input
+                    type="text"
+                    value={editAction.label || ''}
+                    onChange={(event) => setEditAction({ ...editAction, label: event.target.value })}
+                    className="w-full rounded-lg border border-[var(--editor-line)] bg-[var(--background)] px-3 py-2 text-sm text-[var(--editor-ink)] outline-none focus:border-[var(--editor-accent)]"
+                  />
+                </div>
               </div>
 
               <div>
                 <label className="mb-1 block text-sm font-medium text-[var(--editor-ink)]">风格提示词 *</label>
                 <textarea
-                  rows={6}
+                  rows={5}
                   value={editAction.prompt || ''}
                   onChange={(event) => setEditAction({ ...editAction, prompt: event.target.value })}
                   className="w-full rounded-lg border border-[var(--editor-line)] bg-[var(--background)] px-3 py-2 text-sm text-[var(--editor-ink)] outline-none focus:border-[var(--editor-accent)]"
@@ -409,7 +406,7 @@ export function AiImageActionsManager() {
               </div>
             </div>
 
-            <div className="mt-5 flex justify-end gap-2">
+            <div className="flex shrink-0 justify-end gap-2 border-t border-[var(--editor-line)] px-5 py-4">
               <button
                 type="button"
                 onClick={() => setEditAction(null)}

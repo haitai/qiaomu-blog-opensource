@@ -42,6 +42,7 @@ export async function isAdminAuthConfigured(): Promise<boolean> {
 }
 
 export const COOKIE_NAME = 'qmblog_admin'
+export const ADMIN_HINT_COOKIE_NAME = 'qmblog_admin_hint'
 export const COOKIE_MAX_AGE = 60 * 60 * 24 * 30 // 30 天
 
 /**

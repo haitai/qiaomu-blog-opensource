@@ -1,13 +1,12 @@
 'use client'
 
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
-import { Check, Copy, History, Loader2, Sparkles } from 'lucide-react'
+import { Check, Copy, History, Loader2, Sparkles, X } from 'lucide-react'
 import type { EditorInstance } from 'novel'
 import {
   appendStoredHistoryItem,
   LOCAL_HISTORY_UPDATED_EVENT,
   readStoredHistory,
-  startBackgroundTask,
 } from '@/lib/client-background-task'
 import { renderMarkdownToHtml, replaceEditorRangeWithMarkdown } from '@/lib/editor-markdown'
 import { useToast } from '@/components/Toast'
@@ -34,6 +33,12 @@ interface DocumentQuickAction {
   label: string
   prompt: string
   description: string
+}
+
+interface ActiveAiRequestControl {
+  id: string
+  abort: () => void
+  detach: () => void
 }
 
 const DEFAULT_AI_ACTIONS: AiActionItem[] = [
@@ -157,7 +162,7 @@ export function AIModal({
   const aiLoadingRef = useRef(false)
   const modalRef = useRef<HTMLDivElement>(null)
   const outputScrollRef = useRef<HTMLDivElement>(null)
-  const abortControllerRef = useRef<AbortController | null>(null)
+  const activeRequestRef = useRef<ActiveAiRequestControl | null>(null)
   const historyStorageKey = useMemo(
     () => createHistoryStorageKey(historyScope),
     [historyScope],
@@ -179,18 +184,45 @@ export function AIModal({
     setHistoryReady(true)
   }, [historyStorageKey])
 
-  const requestClose = useCallback(() => {
-    abortControllerRef.current?.abort()
-    abortControllerRef.current = null
-    aiLoadingRef.current = false
-    setAiLoading(false)
+  const resetModalState = useCallback(() => {
     setAiOutput('')
     setAiError('')
     setCustomPrompt('')
     setCopied(false)
     setHistoryOpen(false)
+  }, [])
+
+  const detachActiveRequest = useCallback((notify = false) => {
+    if (!activeRequestRef.current) return false
+
+    activeRequestRef.current.detach()
+    activeRequestRef.current = null
+    aiLoadingRef.current = false
+    setAiLoading(false)
+
+    if (notify) {
+      toast.info('后台生成中', 2400)
+    }
+
+    return true
+  }, [toast])
+
+  const requestClose = useCallback(() => {
+    detachActiveRequest(true)
+    resetModalState()
     onClose()
-  }, [onClose])
+  }, [detachActiveRequest, onClose, resetModalState])
+
+  const stopGeneration = useCallback(() => {
+    if (!activeRequestRef.current) return
+
+    const activeRequest = activeRequestRef.current
+    activeRequestRef.current = null
+    activeRequest.abort()
+    aiLoadingRef.current = false
+    setAiLoading(false)
+    setAiError('')
+  }, [])
 
   const storeHistoryItem = useCallback((output: string, promptLabel: string) => {
     const normalizedOutput = output.trim()
@@ -294,11 +326,7 @@ export function AIModal({
   useEffect(() => {
     if (isOpen) {
       const frame = window.requestAnimationFrame(() => {
-        setAiOutput('')
-        setAiError('')
-        setCustomPrompt('')
-        setCopied(false)
-        setHistoryOpen(false)
+        resetModalState()
         setContextMode(
           hasSelectionContext
             ? initialContext
@@ -308,28 +336,50 @@ export function AIModal({
       return () => window.cancelAnimationFrame(frame)
     }
 
-    abortControllerRef.current?.abort()
-    abortControllerRef.current = null
-    aiLoadingRef.current = false
+    detachActiveRequest(true)
     const frame = window.requestAnimationFrame(() => {
       setAiLoading(false)
+      resetModalState()
     })
     return () => window.cancelAnimationFrame(frame)
-  }, [hasSelectionContext, initialContext, isOpen])
+  }, [detachActiveRequest, hasSelectionContext, initialContext, isOpen, resetModalState])
 
   const applyAiAction = (actionKey: string, customInput?: string, actionLabel?: string) => {
     if (!effectiveInputText || aiLoadingRef.current) return
 
     const promptLabel = actionLabel || customInput || '自定义提问'
 
-    requestClose()
+    const controller = new AbortController()
+    const requestId = `${Date.now()}-${Math.random().toString(36).slice(2, 8)}`
+    let attachedToUi = true
+    let stoppedByUser = false
 
-    startBackgroundTask({
-      toast,
-      errorPrefix: 'AI 处理失败',
-      run: async () => {
+    activeRequestRef.current = {
+      id: requestId,
+      abort: () => {
+        stoppedByUser = true
+        attachedToUi = false
+        controller.abort()
+      },
+      detach: () => {
+        attachedToUi = false
+      },
+    }
+
+    aiLoadingRef.current = true
+    setAiLoading(true)
+    setAiOutput('')
+    setAiError('')
+    setCopied(false)
+    setHistoryOpen(false)
+
+    void (async () => {
+      let output = ''
+
+      try {
         const res = await fetch('/api/editor/ai', {
           method: 'POST',
+          signal: controller.signal,
           headers: { 'Content-Type': 'application/json' },
           body: JSON.stringify({
             action: actionKey,
@@ -348,27 +398,66 @@ export function AIModal({
         if (!reader) throw new Error('无法读取响应流')
 
         const decoder = new TextDecoder()
-        let output = ''
+
         while (true) {
           const { done, value } = await reader.read()
           if (done) break
-          output += decoder.decode(value, { stream: true })
+
+          const chunk = decoder.decode(value, { stream: true })
+          if (!chunk) continue
+
+          output += chunk
+
+          if (attachedToUi) {
+            setAiOutput((current) => current + chunk)
+          }
         }
-        output += decoder.decode()
+
+        const tail = decoder.decode()
+        if (tail) {
+          output += tail
+          if (attachedToUi) {
+            setAiOutput((current) => current + tail)
+          }
+        }
 
         if (!output.trim()) throw new Error('AI 返回为空')
-        return output
-      },
-      onSuccess: (output) => {
+
         storeHistoryItem(output, promptLabel)
-      },
-    })
+
+        if (!attachedToUi) {
+          toast.success('已生成', 2400)
+        }
+      } catch (error) {
+        if (controller.signal.aborted) {
+          if (stoppedByUser) {
+            toast.info('已停止', 2000)
+          }
+          return
+        }
+
+        const message = error instanceof Error ? error.message : 'AI 处理失败'
+        if (attachedToUi) {
+          setAiError(message)
+        } else {
+          toast.error(`AI 处理失败：${message}`, 5200)
+        }
+      } finally {
+        if (activeRequestRef.current?.id === requestId) {
+          activeRequestRef.current = null
+        }
+
+        if (attachedToUi) {
+          aiLoadingRef.current = false
+          setAiLoading(false)
+        }
+      }
+    })()
   }
 
   const handleCustomSubmit = () => {
     if (!customPrompt.trim() || aiLoading) return
     applyAiAction('custom', customPrompt.trim(), customPrompt.trim())
-    setCustomPrompt('')
   }
 
   const insertAiBelow = (content = aiOutput) => {
@@ -435,16 +524,26 @@ export function AIModal({
           <div className="text-xs font-medium text-[var(--editor-muted)]">
             {effectiveContext === 'selection' ? '当前默认作用于选中文本' : '当前默认作用于标题和正文'}
           </div>
-          {historyItems.length > 0 && (
+          <div className="flex items-center gap-2">
+            {historyItems.length > 0 && (
+              <button
+                type="button"
+                onClick={() => setHistoryOpen((value) => !value)}
+                className="inline-flex items-center gap-1 rounded-full border border-[var(--editor-line)] px-2.5 py-1 text-xs text-[var(--editor-ink)] hover:bg-[var(--editor-soft)] transition"
+              >
+                <History className="h-3.5 w-3.5" />
+                历史生成
+              </button>
+            )}
             <button
               type="button"
-              onClick={() => setHistoryOpen((value) => !value)}
-              className="inline-flex items-center gap-1 rounded-full border border-[var(--editor-line)] px-2.5 py-1 text-xs text-[var(--editor-ink)] hover:bg-[var(--editor-soft)] transition"
+              onClick={requestClose}
+              className="inline-flex h-8 w-8 items-center justify-center rounded-full border border-[var(--editor-line)] text-[var(--editor-muted)] transition hover:bg-[var(--editor-soft)] hover:text-[var(--editor-ink)]"
+              aria-label="关闭"
             >
-              <History className="h-3.5 w-3.5" />
-              历史生成
+              <X className="h-4 w-4" />
             </button>
-          )}
+          </div>
         </div>
 
         {hasSelectionContext && hasDocumentContext && (
@@ -499,7 +598,7 @@ export function AIModal({
           />
         </div>
         <div className="text-[11px] text-[var(--editor-muted)]">
-          提交后会在后台生成，完成后可在历史里复制、插入或再次应用。
+          默认前台流式输出；关闭后会转后台继续，完成后可在历史里复制、插入或再次应用。
         </div>
 
         {!aiOutput && !aiLoading && !historyOpen && (
@@ -608,9 +707,18 @@ export function AIModal({
         )}
 
         {aiLoading && (
-          <div className="flex items-center gap-2 rounded-lg bg-[var(--editor-soft)] px-3 py-2.5 text-sm text-[var(--editor-muted)]">
-            <Loader2 className="h-4 w-4 animate-spin" />
-            <span>AI 正在生成...</span>
+          <div className="flex items-center justify-between gap-3 rounded-lg bg-[var(--editor-soft)] px-3 py-2.5 text-sm text-[var(--editor-muted)]">
+            <div className="flex items-center gap-2">
+              <Loader2 className="h-4 w-4 animate-spin" />
+              <span>AI 正在生成...</span>
+            </div>
+            <button
+              type="button"
+              onClick={stopGeneration}
+              className="rounded-full border border-[var(--editor-line)] bg-white px-3 py-1 text-xs font-medium text-[var(--editor-ink)] transition hover:bg-[var(--editor-panel)]"
+            >
+              停止生成
+            </button>
           </div>
         )}
 

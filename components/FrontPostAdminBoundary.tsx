@@ -5,6 +5,7 @@ import { InlineArticleEditorClient } from '@/components/InlineArticleEditorClien
 import { useAdminSession } from '@/lib/admin-session-client'
 
 interface FrontPostAdminBoundaryProps {
+  postId?: number | null
   slug: string
   title: string
   html: string
@@ -18,6 +19,7 @@ interface FrontPostAdminBoundaryProps {
 }
 
 export function FrontPostAdminBoundary({
+  postId,
   slug,
   title,
   html,
@@ -52,6 +54,7 @@ export function FrontPostAdminBoundary({
     return (
       <section>
         <InlineArticleEditorClient
+          postId={postId}
           slug={slug}
           title={title}
           html={html}

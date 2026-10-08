@@ -1,0 +1,14 @@
+{
+  "id": "B",
+  "label": "B: 蓝图注",
+  "name": "蓝图注",
+  "notes": "",
+  "dials": {
+    "variance": 7,
+    "motion": 1,
+    "density": 6
+  },
+  "adjustments": "",
+  "source": "click",
+  "receivedAt": "2026-09-03T13:37:34.913Z"
+}

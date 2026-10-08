@@ -5,8 +5,12 @@ import {
   type InputModalDetail,
   type TriggerAIModalDetail,
   type TriggerImageGenerationDetail,
+  type TriggerImageToolDetail,
+  type TriggerCollageModalDetail,
   TRIGGER_AI_MODAL_EVENT,
+  TRIGGER_COLLAGE_MODAL_EVENT,
   TRIGGER_FILE_UPLOAD_EVENT,
+  TRIGGER_IMAGE_TOOL_EVENT,
   TRIGGER_IMAGE_GENERATION_EVENT,
   TRIGGER_IMAGE_UPLOAD_EVENT,
   TRIGGER_INPUT_MODAL_EVENT,
@@ -57,6 +61,7 @@ type EditorImageModalState = {
   open: boolean
   insertPos: number | null
   contextText: string
+  mode: 'generate' | 'collage' | 'library'
 }
 
 const CLOSED_INPUT_MODAL: EditorInputModalState = {
@@ -80,6 +85,7 @@ const CLOSED_IMAGE_MODAL: EditorImageModalState = {
   open: false,
   insertPos: null,
   contextText: '',
+  mode: 'generate',
 }
 
 interface UseEditorAuxiliaryModalsOptions {
@@ -159,12 +165,13 @@ export function useEditorAuxiliaryModals({
     })
   }, [getDocumentText, title])
 
-  const openDocumentImageModal = useCallback(() => {
+  const openDocumentImageModal = useCallback((mode: EditorImageModalState['mode'] = 'generate') => {
     const { insertPos, selectedText } = getSelectionContext()
     setImageModal({
       open: true,
       insertPos,
       contextText: selectedText,
+      mode,
     })
   }, [getSelectionContext])
 
@@ -198,19 +205,45 @@ export function useEditorAuxiliaryModals({
         open: true,
         insertPos: detail.insertPos,
         contextText: detail.selectedText,
+        mode: 'generate',
+      })
+    }
+
+    const handleCollageModal = (event: Event) => {
+      const detail = (event as CustomEvent<TriggerCollageModalDetail>).detail
+      const { insertPos } = getSelectionContext()
+      setImageModal({
+        open: true,
+        insertPos: detail?.insertPos ?? insertPos,
+        contextText: '',
+        mode: 'collage',
+      })
+    }
+
+    const handleImageTool = (event: Event) => {
+      const detail = (event as CustomEvent<TriggerImageToolDetail>).detail
+      setImageModal({
+        open: true,
+        insertPos: detail.insertPos,
+        contextText: detail.selectedText?.trim() || '',
+        mode: detail.mode,
       })
     }
 
     window.addEventListener(TRIGGER_INPUT_MODAL_EVENT, handleInputModal)
     window.addEventListener(TRIGGER_AI_MODAL_EVENT, handleAiModal)
     window.addEventListener(TRIGGER_IMAGE_GENERATION_EVENT, handleImageModal)
+    window.addEventListener(TRIGGER_COLLAGE_MODAL_EVENT, handleCollageModal)
+    window.addEventListener(TRIGGER_IMAGE_TOOL_EVENT, handleImageTool)
 
     return () => {
       window.removeEventListener(TRIGGER_INPUT_MODAL_EVENT, handleInputModal)
       window.removeEventListener(TRIGGER_AI_MODAL_EVENT, handleAiModal)
       window.removeEventListener(TRIGGER_IMAGE_GENERATION_EVENT, handleImageModal)
+      window.removeEventListener(TRIGGER_COLLAGE_MODAL_EVENT, handleCollageModal)
+      window.removeEventListener(TRIGGER_IMAGE_TOOL_EVENT, handleImageTool)
     }
-  }, [getDocumentText, title])
+  }, [getDocumentText, getSelectionContext, title])
 
   return {
     aiModal,

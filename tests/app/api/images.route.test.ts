@@ -111,6 +111,37 @@ describe('/api/images/[...key] route', () => {
     expect(response.headers.get('Content-Length')).toBe('1024')
   })
 
+  it('rejects unsatisfiable range requests without reading the object body', async () => {
+    const head = vi.fn(async () => ({ size: 4096, httpMetadata: { contentType: 'video/mp4' } }))
+    const get = vi.fn(async () => createStoredObject({ size: 4096 }))
+    mocks.getAppCloudflareEnv.mockResolvedValue({
+      IMAGES: { head, get },
+    })
+
+    const response = await GET(createImageRequest('http://test.local/api/images/video/clip.mp4', {
+      headers: { Range: 'bytes=5000-6000' },
+    }) as never, {
+      params: Promise.resolve({ key: ['video', 'clip.mp4'] }),
+    })
+
+    expect(response.status).toBe(416)
+    expect(response.headers.get('Content-Range')).toBe('bytes */4096')
+    expect(get).not.toHaveBeenCalled()
+  })
+
+  it('rejects malformed encoded object keys', async () => {
+    mocks.getAppCloudflareEnv.mockResolvedValue({
+      IMAGES: { head: vi.fn(), get: vi.fn() },
+    })
+
+    const response = await GET(createImageRequest('http://test.local/api/images/image/%E0%A4%A.webp') as never, {
+      params: Promise.resolve({ key: ['image', '%E0%A4%A.webp'] }),
+    })
+
+    expect(response.status).toBe(400)
+    await expect(response.text()).resolves.toBe('Bad image key')
+  })
+
   it('returns the full object with cache headers for ordinary requests', async () => {
     const object = createStoredObject({ size: 2048, httpEtag: 'etag-full' })
     const get = vi.fn(async () => object)

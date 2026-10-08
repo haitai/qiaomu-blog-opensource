@@ -4,6 +4,7 @@ import {
   getCacheKey,
   getCached,
   getCacheNamespace,
+  getVersionedCached,
   getPublicContentCacheNamespace,
   invalidateCache,
   invalidatePublicContentCache,
@@ -92,13 +93,29 @@ describe('cache helpers', () => {
     await invalidateCache(kv as never)
     expect(kv.put).toHaveBeenCalledWith('cache:version', '4')
 
-    kv.get.mockResolvedValueOnce('9')
-    await expect(getCacheKey(kv as never, 'posts:index')).resolves.toBe('posts:index:v9')
+    await expect(getCacheKey(kv as never, 'posts:index')).resolves.toBe('posts:index:v4')
 
+    const versionedKv = createKvMock()
+    versionedKv.get.mockResolvedValueOnce('9')
+    await expect(getCacheKey(versionedKv as never, 'posts:index')).resolves.toBe('posts:index:v9')
+
+    const unversionedKv = createKvMock()
+    unversionedKv.get.mockResolvedValueOnce(null)
+    await expect(getCacheKey(unversionedKv as never, 'posts:index')).resolves.toBe('posts:index')
+
+    await deleteCache(versionedKv as never, 'posts:index:v9')
+    expect(versionedKv.delete).toHaveBeenCalledWith('posts:index:v9')
+  })
+
+  it('uses versioned keys for cached public data', async () => {
+    const kv = createKvMock()
+    const fetcher = vi.fn(async () => ({ value: 2 }))
+
+    kv.get.mockResolvedValueOnce('4')
     kv.get.mockResolvedValueOnce(null)
-    await expect(getCacheKey(kv as never, 'posts:index')).resolves.toBe('posts:index')
 
-    await deleteCache(kv as never, 'posts:index:v9')
-    expect(kv.delete).toHaveBeenCalledWith('posts:index:v9')
+    await expect(getVersionedCached(kv as never, 'home:page:1', fetcher, 90)).resolves.toEqual({ value: 2 })
+    expect(fetcher).toHaveBeenCalledTimes(1)
+    expect(kv.put).toHaveBeenCalledWith('home:page:1:v4', JSON.stringify({ value: 2 }), { expirationTtl: 90 })
   })
 })

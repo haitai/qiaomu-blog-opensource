@@ -2,6 +2,7 @@ import { NextRequest, NextResponse } from 'next/server'
 import { getAppCloudflareEnv } from '@/lib/cloudflare'
 import { authenticateRequest } from '@/lib/admin-auth'
 import { nanoid } from 'nanoid'
+import { linkMediaAssetToArticle, upsertMediaAsset, type MediaAssetSource } from '@/lib/repositories/media-assets'
 
 type ImageBucket = {
   put: (
@@ -71,6 +72,60 @@ function buildAssetUrls(encodedKey: string, cloudflareEnabled: boolean) {
   }
 }
 
+function parsePositiveInteger(value: unknown) {
+  const parsed = typeof value === 'number'
+    ? value
+    : typeof value === 'string'
+      ? Number.parseInt(value, 10)
+      : Number.NaN
+  return Number.isInteger(parsed) && parsed > 0 ? parsed : null
+}
+
+function normalizeUploadSource(value: FormDataEntryValue | null): MediaAssetSource {
+  if (value === 'collage') return 'collage'
+  if (value === 'cover_generator') return 'cover_generator'
+  if (value === 'unsplash') return 'unsplash'
+  return 'upload'
+}
+
+async function recordImageAsset(options: {
+  db?: D1Database
+  source: MediaAssetSource
+  key: string
+  encodedKey: string
+  variants?: Record<string, string>
+  mimeType: string | null
+  sizeBytes: number
+  alt: string
+  postId: number | null
+  slug: string
+  role: 'inline' | 'cover'
+}) {
+  if (!options.db) return undefined
+
+  try {
+    const asset = await upsertMediaAsset(options.db, {
+      source: options.source,
+      r2Key: options.key,
+      url: `/api/images/${options.encodedKey}`,
+      variants: options.variants,
+      mimeType: options.mimeType,
+      sizeBytes: options.sizeBytes,
+      alt: options.alt,
+    })
+    await linkMediaAssetToArticle(options.db, {
+      assetId: asset.id,
+      postId: options.postId,
+      slug: options.slug,
+      role: options.role,
+    })
+    return asset.id
+  } catch (error) {
+    console.warn('Media asset indexing failed:', error)
+    return undefined
+  }
+}
+
 async function calculateHash(file: File): Promise<string> {
   const buffer = await file.arrayBuffer()
   const hashBuffer = await crypto.subtle.digest('SHA-256', buffer)
@@ -97,6 +152,10 @@ export async function POST(req: NextRequest) {
 
     const formData = await req.formData()
     const file = formData.get('file')
+    const postId = parsePositiveInteger(formData.get('postId'))
+    const slug = typeof formData.get('slug') === 'string' ? String(formData.get('slug')).trim() : ''
+    const role = formData.get('role') === 'cover' ? 'cover' : 'inline'
+    const source = normalizeUploadSource(formData.get('source'))
 
     if (!(file instanceof File)) {
       return NextResponse.json({ error: '缺少文件' }, { status: 400 })
@@ -134,6 +193,21 @@ export async function POST(req: NextRequest) {
       if (existing) {
         const encodedKey = dedupKey.split('/').map(encodeURIComponent).join('/')
         const variants = category === 'image' ? buildAssetUrls(encodedKey, cloudflareImagePipeline) : undefined
+        const assetId = category === 'image'
+          ? await recordImageAsset({
+            db: env.DB,
+            source,
+            key: dedupKey,
+            encodedKey,
+            variants,
+            mimeType: file.type || null,
+            sizeBytes: file.size,
+            alt: file.name,
+            postId,
+            slug,
+            role,
+          })
+          : undefined
         return NextResponse.json({
           success: true,
           key: dedupKey,
@@ -144,6 +218,7 @@ export async function POST(req: NextRequest) {
           deduplicated: true,
           delivery: cloudflareImagePipeline ? 'cloudflare' : 'origin',
           variants,
+          assetId,
         })
       }
       key = dedupKey
@@ -183,6 +258,23 @@ export async function POST(req: NextRequest) {
 
     const encodedKey = key.split('/').map(encodeURIComponent).join('/')
     const variants = category === 'image' ? buildAssetUrls(encodedKey, cloudflareImagePipeline) : undefined
+    let assetId: number | undefined
+
+    if (category === 'image' && env.DB) {
+      assetId = await recordImageAsset({
+        db: env.DB,
+        source,
+        key,
+        encodedKey,
+        variants,
+        mimeType: contentType || null,
+        sizeBytes: file.size,
+        alt: file.name,
+        postId,
+        slug,
+        role,
+      })
+    }
 
     return NextResponse.json({
       success: true,
@@ -193,6 +285,7 @@ export async function POST(req: NextRequest) {
       size: file.size,
       delivery: cloudflareImagePipeline ? 'cloudflare' : 'origin',
       variants,
+      assetId,
     })
   } catch (error) {
     console.error('Upload error:', error)

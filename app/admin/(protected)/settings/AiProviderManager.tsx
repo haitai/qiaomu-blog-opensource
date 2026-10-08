@@ -184,6 +184,7 @@ export function AiProviderManager() {
     try {
       const params = new URLSearchParams({
         provider: editing.provider,
+        provider_type: editing.provider_type,
         base_url: normalizeBaseUrl(editing.base_url),
       })
       if (editing.id) params.set('profile_id', String(editing.id))
@@ -239,6 +240,9 @@ export function AiProviderManager() {
       const payload: Record<string, unknown> = {
         base_url: normalizeBaseUrl(editing.base_url),
         model: editing.model.trim(),
+        provider: editing.provider,
+        provider_name: editing.provider_name,
+        provider_type: editing.provider_type,
         temperature: clampTemperature(editing.temperature),
         max_tokens: Math.min(clampMaxTokens(editing.max_tokens), 256),
       }

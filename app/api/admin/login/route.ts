@@ -3,6 +3,7 @@ import {
   verifyPassword,
   getSessionToken,
   COOKIE_NAME,
+  ADMIN_HINT_COOKIE_NAME,
   COOKIE_MAX_AGE,
   getAdminAuthConfigError,
 } from '@/lib/admin-auth'
@@ -28,6 +29,11 @@ export async function POST(req: NextRequest) {
 
     response.cookies.set(COOKIE_NAME, token, {
       httpOnly: true,
+      path: '/',
+      maxAge: COOKIE_MAX_AGE,
+      sameSite: 'lax',
+    })
+    response.cookies.set(ADMIN_HINT_COOKIE_NAME, '1', {
       path: '/',
       maxAge: COOKIE_MAX_AGE,
       sameSite: 'lax',

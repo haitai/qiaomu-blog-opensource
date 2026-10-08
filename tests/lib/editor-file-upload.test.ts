@@ -98,9 +98,9 @@ describe('editor-file-upload helpers', () => {
     expect(buildEditorImageFilename('https://example.com/files/photo.jpeg', '')).toBe('photo.jpeg')
   })
 
-  it('copies image blobs to clipboard when the browser supports image clipboard writes', async () => {
+  it('copies png image blobs to clipboard when the browser supports image clipboard writes', async () => {
     const write = vi.fn().mockResolvedValue(undefined)
-    const imageBlob = new Blob(['image-bytes'], { type: 'image/webp' })
+    const imageBlob = new Blob(['image-bytes'], { type: 'image/png' })
 
     vi.stubGlobal('navigator', {
       clipboard: { write },
@@ -122,6 +122,74 @@ describe('editor-file-upload helpers', () => {
     await copyEditorImage('/api/images/copied.webp')
 
     expect(write).toHaveBeenCalledTimes(1)
+    const clipboardItem = write.mock.calls[0]?.[0]?.[0] as { items: Record<string, Blob> }
+    expect(clipboardItem.items['image/png']).toBe(imageBlob)
+  })
+
+  it('converts webp image blobs to png before writing to the clipboard', async () => {
+    const write = vi.fn().mockResolvedValue(undefined)
+    const imageBlob = new Blob(['image-bytes'], { type: 'image/webp' })
+    const pngBlob = new Blob(['png-bytes'], { type: 'image/png' })
+    const drawImage = vi.fn()
+    const canvas = {
+      width: 0,
+      height: 0,
+      getContext: vi.fn(() => ({ drawImage })),
+      toBlob: vi.fn((callback: BlobCallback, mimeType?: string) => {
+        expect(mimeType).toBe('image/png')
+        callback(pngBlob)
+      }),
+    }
+
+    class FakeImage {
+      naturalWidth = 640
+      naturalHeight = 360
+      width = 640
+      height = 360
+      onload: (() => void) | null = null
+      onerror: (() => void) | null = null
+
+      set src(_value: string) {
+        this.onload?.()
+      }
+    }
+
+    vi.stubGlobal('navigator', {
+      clipboard: { write },
+    })
+    vi.stubGlobal('window', {
+      ClipboardItem: class ClipboardItem {
+        items: Record<string, Blob>
+
+        constructor(items: Record<string, Blob>) {
+          this.items = items
+        }
+      },
+      Image: FakeImage,
+    })
+    vi.stubGlobal('document', {
+      createElement: vi.fn((tagName: string) => {
+        expect(tagName).toBe('canvas')
+        return canvas
+      }),
+    })
+    vi.stubGlobal('URL', {
+      createObjectURL: vi.fn(() => 'blob:copied-image'),
+      revokeObjectURL: vi.fn(),
+    })
+    vi.stubGlobal('fetch', vi.fn().mockResolvedValue({
+      ok: true,
+      blob: async () => imageBlob,
+    }))
+
+    await copyEditorImage('/api/images/copied.webp')
+
+    expect(canvas.width).toBe(640)
+    expect(canvas.height).toBe(360)
+    expect(drawImage).toHaveBeenCalledTimes(1)
+    expect(write).toHaveBeenCalledTimes(1)
+    const clipboardItem = write.mock.calls[0]?.[0]?.[0] as { items: Record<string, Blob> }
+    expect(clipboardItem.items['image/png']).toBe(pngBlob)
   })
 
   it('throws a readable error when image clipboard is unsupported', async () => {
@@ -211,7 +279,7 @@ describe('editor-file-upload helpers', () => {
       type: 'video/mp4',
       name: 'clip.mp4',
     })
-    expect(setVideo).toHaveBeenCalledWith({ src: '/uploads/clip.mp4' })
+    expect(setVideo).toHaveBeenCalledWith({ src: '/uploads/clip.mp4', title: 'clip.mp4' })
 
     insertUploadedFileIntoEditor(editor, createFile('voice.mp3', 'audio/mpeg'), {
       url: '/uploads/voice.mp3',

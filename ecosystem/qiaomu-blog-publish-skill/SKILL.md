@@ -68,6 +68,8 @@ curl -s "https://your-domain.com/api/admin/categories" \
 
 让用户选择分类；如果不选，可以留空，后续再在后台调整。
 
+分类接口返回 `{ name, slug }`。发布到 `/api/posts` 时，`category` 字段应传所选分类的 `name`，不要传 `slug`。例如传 `AI资讯`，不要传 `ai-news`；`slug` 只用于分类 URL 和本地匹配。
+
 ### 4. 解析内容
 
 标题优先级：
@@ -112,7 +114,7 @@ curl -s -X POST "https://your-domain.com/api/uploads" \
 
 ### 7. 让用户确认发布参数
 
-确认三件事：
+确认三件事，若用户要求更新已有文章，还要确认目标 `slug`：
 
 1. 标题
 2. 分类
@@ -120,7 +122,7 @@ curl -s -X POST "https://your-domain.com/api/uploads" \
 
 默认用 `draft`。
 
-### 8. 发布
+### 8. 发布或更新
 
 ```bash
 curl -s -X POST "https://your-domain.com/api/posts" \
@@ -129,8 +131,36 @@ curl -s -X POST "https://your-domain.com/api/posts" \
   -d '{
     "title": "The Title",
     "content": "Full processed Markdown content",
-    "category": "selected-category-or-empty",
+    "category": "selected-category-name-or-empty",
     "status": "draft"
+  }'
+```
+
+如果用户提供了已有文章的 `slug`，或明确要求“更新这篇文章”，使用显式 upsert，避免重复发布一篇新文章：
+
+```bash
+curl -s -X POST "https://your-domain.com/api/posts" \
+  -H "Authorization: Bearer $TOKEN" \
+  -H "Content-Type: application/json" \
+  -d '{
+    "upsert": true,
+    "slug": "existing-post-slug",
+    "title": "The Title",
+    "content": "Full processed Markdown content",
+    "category": "selected-category-name-or-empty",
+    "status": "draft"
+  }'
+```
+
+也可以用 `PUT /api/posts` 或 `PATCH /api/posts` 更新：
+
+```bash
+curl -s -X PUT "https://your-domain.com/api/posts" \
+  -H "Authorization: Bearer $TOKEN" \
+  -H "Content-Type: application/json" \
+  -d '{
+    "slug": "existing-post-slug",
+    "content": "Updated Markdown content"
   }'
 ```
 

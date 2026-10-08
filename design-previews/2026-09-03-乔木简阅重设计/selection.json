@@ -1,0 +1,14 @@
+{
+  "id": "C",
+  "label": "C: 墨绿签",
+  "name": "墨绿签",
+  "notes": "",
+  "dials": {
+    "variance": 6,
+    "motion": 1,
+    "density": 6
+  },
+  "adjustments": "",
+  "source": "click",
+  "receivedAt": "2026-09-03T12:55:38.443Z"
+}

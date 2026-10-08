@@ -22,6 +22,7 @@ import {
   normalizeBaseUrl,
   resolveAiConfigSecret,
 } from '@/lib/ai-provider-profiles'
+import { upsertMediaAsset } from '@/lib/repositories/media-assets'
 
 type ImageBucket = {
   put: (
@@ -54,6 +55,8 @@ interface GenerateEditorImageInput {
   aspectRatio?: string
   resolution?: string
   profileId?: number | null
+  source?: 'ai_chat' | 'image_modal' | 'cover_generator'
+  strictUserPrompt?: boolean
   db: D1Database
   env?: AIImageEnv
   images: ImageBucket
@@ -88,6 +91,9 @@ export interface GeneratedEditorImage {
   size: string
   profileName: string
   model: string
+  mimeType: string
+  sizeBytes: number
+  assetId?: number
 }
 
 function readFlag(value: unknown): boolean {
@@ -126,7 +132,7 @@ function getNowPrefix() {
 }
 
 function toBytesFromBase64(input: string): Uint8Array {
-  const normalized = input.trim()
+  const normalized = input.trim().replace(/^data:image\/[a-z0-9.+-]+;base64,/i, '')
   if (!normalized) return new Uint8Array()
 
   const BufferCtor = (globalThis as unknown as {
@@ -147,32 +153,88 @@ function toBytesFromBase64(input: string): Uint8Array {
   return bytes
 }
 
-function buildContextText(articleTitle?: string, contextText?: string) {
+function buildTitleMaterial(articleTitle: string, allowReadableText: boolean) {
+  return allowReadableText
+    ? `文章标题：${articleTitle}`
+    : `文章主题参考（仅用于理解主题，不要作为画面文字）：${articleTitle}`
+}
+
+function buildContextText(articleTitle: string | undefined, contextText: string | undefined, allowReadableText: boolean) {
   const sections: string[] = []
   const normalizedTitle = (articleTitle || '').trim()
   const normalizedContext = (contextText || '').trim()
 
-  if (normalizedTitle) sections.push(`文章标题：${normalizedTitle}`)
-  if (normalizedContext) sections.push(`当前位置上下文：${normalizedContext.slice(0, 500)}`)
+  if (normalizedTitle) sections.push(buildTitleMaterial(normalizedTitle, allowReadableText))
+  if (normalizedContext) {
+    sections.push(allowReadableText
+      ? `当前位置上下文：${normalizedContext.slice(0, 500)}`
+      : `上下文参考（仅用于理解主题，不要作为画面文字）：${normalizedContext.slice(0, 500)}`)
+  }
 
   return sections.join('\n')
 }
 
-function buildUserFacingPrompt(userPrompt?: string, articleTitle?: string, contextText?: string) {
-  const normalizedPrompt = (userPrompt || '').trim()
-  if (normalizedPrompt) return normalizedPrompt
-  return buildContextText(articleTitle, contextText)
+export function shouldAllowReadableTextInGeneratedImage(actionPrompt?: string, userPrompt?: string) {
+  const normalized = `${actionPrompt || ''}\n${userPrompt || ''}`.toLowerCase()
+  return /信息图|图解|流程图|示意图|关系图|架构图|图表|表格|清单|列表|时间线|路线图|海报|标题|文字|文案|标签|标注|quote|typography|text|label|caption|infographic|diagram|chart|timeline|roadmap/.test(normalized)
 }
 
-function buildFinalImagePrompt(
+function buildSelectedTextMaterial(contextText: string, allowReadableText: boolean, strictUserPrompt: boolean) {
+  const normalizedContext = contextText.trim()
+  if (!normalizedContext) return ''
+
+  const clipped = normalizedContext.slice(0, 1200)
+  if (strictUserPrompt) {
+    return `选中文本/输入素材（按用户自定义要求使用；如果用户要求生成文字、信息图、标题、标签或排版，请作为可渲染文字；如果用户要求不要文字，仅用于理解主题）：\n${clipped}`
+  }
+
+  if (allowReadableText) {
+    return `选中文本素材（可转成图中文字、标题、标签、说明和数据；保留关键事实、数字、专名与中文原意）：\n${clipped}`
+  }
+
+  return `选中文本上下文（用于理解主题，不要求逐字出现在画面）：\n${clipped}`
+}
+
+function buildUserFacingPrompt(
+  userPrompt: string | undefined,
+  articleTitle: string | undefined,
+  contextText: string | undefined,
+  allowReadableText: boolean,
+  strictUserPrompt: boolean,
+) {
+  const normalizedPrompt = (userPrompt || '').trim()
+  const normalizedTitle = (articleTitle || '').trim()
+  const selectedMaterial = buildSelectedTextMaterial(contextText || '', allowReadableText, strictUserPrompt)
+  const titleMaterial = normalizedTitle ? buildTitleMaterial(normalizedTitle, allowReadableText) : ''
+
+  if (normalizedPrompt && selectedMaterial) {
+    return [normalizedPrompt, titleMaterial, selectedMaterial].filter(Boolean).join('\n\n')
+  }
+  if (normalizedPrompt) return normalizedPrompt
+  if (selectedMaterial) return [titleMaterial, selectedMaterial].filter(Boolean).join('\n\n')
+  return buildContextText(articleTitle, contextText, allowReadableText)
+}
+
+export function buildFinalImagePrompt(
   actionPrompt: string | undefined,
   userPrompt?: string,
   articleTitle?: string,
   contextText?: string,
   aspectRatio?: string,
   resolution?: string,
+  options: {
+    strictUserPrompt?: boolean
+  } = {},
 ) {
-  const contentPrompt = buildUserFacingPrompt(userPrompt, articleTitle, contextText)
+  const strictUserPrompt = Boolean(options.strictUserPrompt)
+  const allowReadableText = strictUserPrompt || shouldAllowReadableTextInGeneratedImage(actionPrompt, userPrompt)
+  const contentPrompt = buildUserFacingPrompt(
+    userPrompt,
+    articleTitle,
+    contextText,
+    allowReadableText,
+    strictUserPrompt,
+  )
   if (!contentPrompt) {
     throw new Error('请输入图片主题，或在正文中提供足够的上下文')
   }
@@ -181,9 +243,16 @@ function buildFinalImagePrompt(
   if (actionPrompt?.trim()) sections.push(actionPrompt.trim())
   sections.push(`主题与内容：\n${contentPrompt}`)
 
-  const context = buildContextText(articleTitle, contextText)
-  if (context && context !== contentPrompt) {
-    sections.push(`补充上下文（仅用于理解主题，不要把这些文字直接渲染进图片，除非用户明确要求）：\n${context}`)
+  const context = buildContextText(articleTitle, contextText, allowReadableText)
+  const contextAlreadyIncluded = Boolean(
+    contextText?.trim() && contentPrompt.includes(contextText.trim().slice(0, 200)),
+  )
+  if (context && context !== contentPrompt && !contextAlreadyIncluded) {
+    sections.push(strictUserPrompt
+      ? `补充上下文（只按用户自定义要求取用，不覆盖用户要求）：\n${context}`
+      : allowReadableText
+      ? `补充上下文（用于保持主题一致，可提炼成少量图中文字）：\n${context}`
+      : `补充上下文（仅用于理解主题，不要求逐字出现在画面）：\n${context}`)
   }
 
   const aspectRatioHint = buildAspectRatioPromptHint(aspectRatio)
@@ -196,7 +265,11 @@ function buildFinalImagePrompt(
     sections.push(`输出精度偏好：\n${resolutionHint}`)
   }
 
-  sections.push('输出要求：构图完整、主题清晰、适合中文文章配图。除非用户明确要求，不要在图片中加入可读文字、logo、签名或水印；如果当前模型不支持精确比例或分辨率，请优先遵守构图比例意图与细节等级。')
+  sections.push(strictUserPrompt
+    ? '输出要求：用户自定义要求优先级最高。严格遵从用户自定义要求，不添加与其冲突的风格、禁令或内容限制。是否在图中出现可读文字，完全按用户自定义要求处理；若用户要求信息图、文字、标题、标签或排版，必须把输入素材中的关键文字渲染为可读文字；若用户要求不要文字，则不要加文字。避免无关 logo、签名或水印；如果当前模型不支持精确比例或分辨率，请优先遵守构图比例意图与细节等级。'
+    : allowReadableText
+      ? '输出要求：构图完整、主题清晰、适合中文文章配图。可以加入清晰可读的中文文字；如果是信息图/图解，优先把选中文本中的关键标题、数字、关系和步骤转成画面文字。本条优先级高于快捷模板中关于不加文字的默认限制。不要生成乱码、无关 logo、签名或水印；如果当前模型不支持精确比例或分辨率，请优先遵守构图比例意图与细节等级。'
+      : '输出要求：构图完整、主题清晰、适合中文文章配图。除非用户明确要求，不要在图片中加入可读文字、logo、签名或水印；如果当前模型不支持精确比例或分辨率，请优先遵守构图比例意图与细节等级。')
   return sections.join('\n\n')
 }
 
@@ -323,35 +396,7 @@ async function runGenerateWithFallback(
     quality: string
   },
 ): Promise<ImagesResponse> {
-  const attempts: Array<Record<string, unknown>> = [
-    {
-      model: params.model,
-      prompt: params.prompt,
-      n: 1,
-      size: params.size,
-      quality: params.quality,
-      output_format: 'webp',
-      background: 'auto',
-    },
-    {
-      model: params.model,
-      prompt: params.prompt,
-      n: 1,
-      size: params.size,
-      quality: params.quality,
-    },
-    {
-      model: params.model,
-      prompt: params.prompt,
-      n: 1,
-      size: params.size,
-    },
-    {
-      model: params.model,
-      prompt: params.prompt,
-      n: 1,
-    },
-  ]
+  const attempts = buildOpenAiCompatGenerationAttempts(config, params)
 
   let lastError: Error | null = null
 
@@ -368,6 +413,74 @@ async function runGenerateWithFallback(
   }
 
   throw lastError || new Error('图片生成失败')
+}
+
+function isHiApiBaseUrl(baseURL: string) {
+  try {
+    const hostname = new URL(normalizeBaseUrl(baseURL)).hostname.toLowerCase()
+    return hostname === 'api.hiapi.ai' || hostname.endsWith('.hiapi.ai')
+  } catch {
+    return false
+  }
+}
+
+function shouldPreferMinimalOpenAiImagePayload(
+  config: {
+    baseURL: string
+    providerType?: string
+  },
+  model: string,
+) {
+  const normalizedModel = model.trim().toLowerCase()
+  return config.providerType === 'openai_images'
+    && isHiApiBaseUrl(config.baseURL)
+    && normalizedModel === 'gpt-image-2-beta'
+}
+
+export function buildOpenAiCompatGenerationAttempts(
+  config: {
+    baseURL: string
+    providerType?: string
+  },
+  params: {
+    model: string
+    prompt: string
+    size: string
+    quality: string
+  },
+): Array<Record<string, unknown>> {
+  const richBody = {
+    model: params.model,
+    prompt: params.prompt,
+    n: 1,
+    size: params.size,
+    quality: params.quality,
+    output_format: 'webp',
+    background: 'auto',
+  }
+  const qualityBody = {
+    model: params.model,
+    prompt: params.prompt,
+    n: 1,
+    size: params.size,
+    quality: params.quality,
+  }
+  const sizeBody = {
+    model: params.model,
+    prompt: params.prompt,
+    n: 1,
+    size: params.size,
+  }
+  const minimalBody = {
+    model: params.model,
+    prompt: params.prompt,
+  }
+
+  if (shouldPreferMinimalOpenAiImagePayload(config, params.model)) {
+    return [minimalBody, sizeBody, qualityBody, richBody]
+  }
+
+  return [richBody, qualityBody, sizeBody, minimalBody]
 }
 
 async function runEditWithFallback(
@@ -593,10 +706,11 @@ async function extractGeneratedImagePayload(
     if (bytes.length === 0) {
       throw new Error('图片数据为空')
     }
+    const inferred = inferImageTypeFromBytes(bytes)
     return {
       bytes,
-      contentType: 'image/webp',
-      extension: 'webp',
+      contentType: inferred.contentType,
+      extension: inferred.extension,
       revisedPrompt: (payload.revised_prompt || '').trim(),
     }
   }
@@ -898,6 +1012,9 @@ export async function generateEditorImage(
     input.contextText,
     requestedAspectRatio,
     requestedResolution,
+    {
+      strictUserPrompt: input.strictUserPrompt ?? input.action === 'custom',
+    },
   )
   const hasReferenceImage = typeof input.referenceImageUrl === 'string' && input.referenceImageUrl.trim().length > 0
 
@@ -990,10 +1107,26 @@ export async function generateEditorImage(
 
   const encodedKey = key.split('/').map(encodeURIComponent).join('/')
   const variants = buildAssetUrls(encodedKey, readFlag(input.env?.ENABLE_CF_IMAGE_PIPELINE))
+  const url = `/api/images/${encodedKey}`
+  const asset = await upsertMediaAsset(input.db, {
+    source: input.source || 'image_modal',
+    r2Key: key,
+    url,
+    variants,
+    mimeType: imagePayload.contentType,
+    sizeBytes: imagePayload.bytes.length,
+    alt,
+    prompt: finalPrompt,
+    revisedPrompt: imagePayload.revisedPrompt,
+    model: profile.model,
+    providerName: profile.name,
+    aspectRatio: requestedAspectRatio,
+    resolution: requestedResolution,
+  })
 
   return {
     key,
-    url: `/api/images/${encodedKey}`,
+    url,
     variants,
     prompt: finalPrompt,
     revisedPrompt: imagePayload.revisedPrompt,
@@ -1004,5 +1137,8 @@ export async function generateEditorImage(
     size: resolveRequestedSize(requestedAspectRatio, action?.size || seeded?.size),
     profileName: profile.name,
     model: profile.model,
+    mimeType: imagePayload.contentType,
+    sizeBytes: imagePayload.bytes.length,
+    assetId: asset.id,
   }
 }

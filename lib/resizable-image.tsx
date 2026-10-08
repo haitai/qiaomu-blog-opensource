@@ -289,6 +289,7 @@ function ResizableImageView(props: any) {
 
   return (
     <NodeViewWrapper
+      data-type="image"
       className="resizable-image-wrapper"
       style={{ display: 'flex', justifyContent: align === 'left' ? 'flex-start' : 'center' }}
       onContextMenu={(event: React.MouseEvent) => {

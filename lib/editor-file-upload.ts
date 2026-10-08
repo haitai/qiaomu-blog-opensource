@@ -4,6 +4,14 @@ export interface UploadedEditorFile {
   url: string
   type: string
   name: string
+  assetId?: number
+}
+
+export interface UploadEditorFileOptions {
+  postId?: number | null
+  slug?: string | null
+  role?: 'inline' | 'cover'
+  source?: 'upload' | 'collage'
 }
 
 function sanitizeFilenameSegment(value: string) {
@@ -41,12 +49,91 @@ export function downloadEditorImage(imageUrl: string, fallbackName?: string) {
   anchor.remove()
 }
 
+const CLIPBOARD_IMAGE_MIME_TYPE = 'image/png'
+
+type ClipboardItemConstructor = typeof ClipboardItem & {
+  supports?: (type: string) => boolean
+}
+
+function getClipboardItemConstructor() {
+  if (typeof window === 'undefined' || typeof window.ClipboardItem === 'undefined') return null
+  return window.ClipboardItem as ClipboardItemConstructor
+}
+
+function browserSupportsClipboardImageType(type: string) {
+  const ClipboardItemCtor = getClipboardItemConstructor()
+  if (!ClipboardItemCtor) return false
+  if (typeof ClipboardItemCtor.supports !== 'function') return true
+  return ClipboardItemCtor.supports(type)
+}
+
+function loadBlobAsImage(blob: Blob) {
+  return new Promise<HTMLImageElement>((resolve, reject) => {
+    if (
+      typeof window === 'undefined'
+      || typeof window.Image === 'undefined'
+      || typeof URL === 'undefined'
+      || typeof URL.createObjectURL !== 'function'
+    ) {
+      reject(new Error('当前浏览器不支持复制图片'))
+      return
+    }
+
+    const image = new window.Image()
+    const objectUrl = URL.createObjectURL(blob)
+    image.onload = () => {
+      URL.revokeObjectURL(objectUrl)
+      resolve(image)
+    }
+    image.onerror = () => {
+      URL.revokeObjectURL(objectUrl)
+      reject(new Error('图片转换失败'))
+    }
+    image.src = objectUrl
+  })
+}
+
+async function convertImageBlobToPng(blob: Blob) {
+  if (typeof document === 'undefined') {
+    throw new Error('当前浏览器不支持复制图片')
+  }
+
+  const image = await loadBlobAsImage(blob)
+  const canvas = document.createElement('canvas')
+  canvas.width = image.naturalWidth || image.width || 1
+  canvas.height = image.naturalHeight || image.height || 1
+
+  const context = canvas.getContext('2d')
+  if (!context || typeof canvas.toBlob !== 'function') {
+    throw new Error('当前浏览器不支持复制图片')
+  }
+
+  context.drawImage(image, 0, 0)
+
+  return new Promise<Blob>((resolve, reject) => {
+    canvas.toBlob((pngBlob) => {
+      if (pngBlob) {
+        resolve(pngBlob)
+        return
+      }
+
+      reject(new Error('图片转换失败'))
+    }, CLIPBOARD_IMAGE_MIME_TYPE)
+  })
+}
+
+async function normalizeImageBlobForClipboard(blob: Blob) {
+  if ((blob.type || '').toLowerCase() === CLIPBOARD_IMAGE_MIME_TYPE) return blob
+  return convertImageBlobToPng(blob)
+}
+
 export async function copyEditorImage(imageUrl: string) {
+  const ClipboardItemCtor = getClipboardItemConstructor()
   if (
     typeof navigator === 'undefined'
-    || typeof window === 'undefined'
     || !navigator.clipboard?.write
-    || typeof window.ClipboardItem === 'undefined'
+    || !ClipboardItemCtor
+    || !browserSupportsClipboardImageType(CLIPBOARD_IMAGE_MIME_TYPE)
   ) {
     throw new Error('当前浏览器不支持复制图片')
   }
@@ -60,21 +147,34 @@ export async function copyEditorImage(imageUrl: string) {
   }
 
   const blob = await response.blob()
-  const mimeType = blob.type || 'image/png'
+  const clipboardBlob = await normalizeImageBlobForClipboard(blob)
 
-  await navigator.clipboard.write([
-    new window.ClipboardItem({
-      [mimeType]: blob,
-    }),
-  ])
+  try {
+    await navigator.clipboard.write([
+      new ClipboardItemCtor({
+        [CLIPBOARD_IMAGE_MIME_TYPE]: clipboardBlob,
+      }),
+    ])
+  } catch (error) {
+    if (error instanceof Error && /not supported|ClipboardItem/i.test(error.message)) {
+      throw new Error('当前浏览器不支持复制图片')
+    }
+
+    throw error
+  }
 }
 
 export async function uploadEditorFile(
   file: File,
   onProgress?: (percent: number) => void,
+  options: UploadEditorFileOptions = {},
 ): Promise<UploadedEditorFile> {
   const formData = new FormData()
   formData.append('file', file)
+  if (options.postId) formData.append('postId', String(options.postId))
+  if (options.slug) formData.append('slug', options.slug)
+  if (options.role) formData.append('role', options.role)
+  if (options.source) formData.append('source', options.source)
 
   return new Promise<UploadedEditorFile>((resolve, reject) => {
     const xhr = new XMLHttpRequest()
@@ -95,6 +195,7 @@ export async function uploadEditorFile(
             url?: string
             type?: string
             name?: string
+            assetId?: number
             error?: string
           }
 
@@ -103,6 +204,7 @@ export async function uploadEditorFile(
               url: result.url,
               type: result.type || file.type,
               name: result.name || file.name,
+              assetId: Number.isFinite(result.assetId) ? Number(result.assetId) : undefined,
             })
             return
           }
@@ -191,7 +293,7 @@ export function insertUploadedFileIntoEditor(
 ) {
   if (file.type.startsWith('video/')) {
     // @ts-expect-error - setVideo is defined in video-extension.tsx
-    editor.chain().focus().setVideo({ src: uploaded.url }).run()
+    editor.chain().focus().setVideo({ src: uploaded.url, title: uploaded.name || file.name }).run()
     return
   }
 

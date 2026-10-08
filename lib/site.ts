@@ -1,5 +1,5 @@
 import { normalizeTheme, type Theme } from '@/lib/appearance'
-import { getPublicCategories, getSetting } from '@/lib/db'
+import { getPublicCategories, getSettings } from '@/lib/db'
 
 export interface SiteNavLink {
   label: string
@@ -22,11 +22,11 @@ export async function getSiteHeaderData(db: D1Database): Promise<{
   let defaultTheme: Theme = 'default'
 
   try {
-    const [navJson, categoryRows, themeValue] = await Promise.all([
-      getSetting(db, 'nav_links'),
+    const [settings, categoryRows] = await Promise.all([
+      getSettings(db, ['nav_links', 'default_theme']),
       getPublicCategories(db),
-      getSetting(db, 'default_theme'),
     ])
+    const navJson = settings.nav_links
 
     if (navJson) {
       try {
@@ -44,7 +44,7 @@ export async function getSiteHeaderData(db: D1Database): Promise<{
         slug: category.slug,
       }))
 
-    defaultTheme = normalizeTheme(themeValue)
+    defaultTheme = normalizeTheme(settings.default_theme)
   } catch {
     // Keep graceful fallback behavior for public pages
   }

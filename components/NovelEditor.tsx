@@ -1,7 +1,9 @@
 'use client'
 
 import Link from 'next/link'
+import dynamic from 'next/dynamic'
 import { useEffect, useRef, useState, useCallback, useMemo } from 'react'
+import type { Node as ProseMirrorNode } from '@tiptap/pm/model'
 import {
   ArrowLeft,
   ChevronUp,
@@ -10,13 +12,15 @@ import {
   Loader2,
   Lock,
   Link2,
-  Copy,
   FileDown,
   Send,
+  Smartphone,
+  Pilcrow,
   PanelRightOpen,
   PanelRightClose,
   ImageIcon,
   WandSparkles,
+  ListTree,
   X,
 } from 'lucide-react'
 import {
@@ -28,18 +32,23 @@ import {
 import {
   createEditorExtensions,
   buildEditorProps,
+  formatChineseCopywritingInEditor,
+  type ChineseCopywritingScope,
   FormattingBubble,
   SlashMenu,
 } from '@/lib/editor-extensions'
 import { generatePassword } from '@/lib/password'
 import { InputModal } from '@/components/InputModal'
 import { CategorySelector } from '@/components/CategorySelector'
-import { ImageGenerationModal } from '@/components/ImageGenerationModal'
-import { ImageCropModal } from '@/components/ImageCropModal'
-import { WeChatPublishModal } from '@/components/WeChatPublishModal'
+import { WeChatThemeSelector } from '@/components/WeChatThemeSelector'
+import type { EditorAiChatContext } from '@/components/EditorAiChatPanel'
+import { EditorCoverImagePreview } from '@/components/EditorCoverImagePreview'
+import { EditorTocRail } from '@/components/ArticleToc'
+import { BlockHandleMenu } from '@/lib/editor-block-menu'
 import { useToast } from '@/components/Toast'
 import { startBackgroundTask } from '@/lib/client-background-task'
-import { AIModal } from '@/lib/ai-modal'
+import { renderMarkdownToEditorHtml, replaceEditorRangeWithMarkdown } from '@/lib/editor-markdown'
+import { resolveExactTextRangeInDoc } from '@/lib/editor-ai-edit'
 import {
   COVER_IMAGE_OPTIMIZE_OPTIONS,
   EDITOR_IMAGE_OPTIMIZE_OPTIONS,
@@ -55,7 +64,18 @@ import {
   replaceImageNodeAtPosition,
   uploadEditorFile,
 } from '@/lib/editor-file-upload'
-import { copyAsWechatArticleFormat, downloadArticleAsPdf } from '@/lib/wechat-copy'
+import { CopyFormatDropdown } from '@/components/DownloadMarkdown'
+import { normalizeWechatPublishingHtml } from '@/lib/wechat-publishing-enhancements'
+import {
+  fetchWechatExportThemeConfig,
+  getPreferredWechatExportThemeId,
+  rememberPreferredWechatExportThemeId,
+} from '@/lib/wechat-theme-client'
+import {
+  DEFAULT_WECHAT_EXPORT_THEME_CONFIG,
+  getWechatExportTheme,
+  type WechatExportThemeConfig,
+} from '@/lib/wechat-themes'
 import {
   extractFilesFromClipboard,
   useEditorAuxiliaryModals,
@@ -66,15 +86,68 @@ import { resolvePostCoverImage } from '@/lib/default-cover-images'
 import { buildAutoDescription, normalizePostSlug, sanitizePostSlugInput } from '@/lib/post-utils'
 import { getSiteDisplayUrl } from '@/lib/site-config'
 import { resizeTextareaHeight, useAutoResizeTextarea } from '@/lib/textarea-autosize'
+import { focusEditorDocumentStart, isTitleEndEnter } from '@/lib/editor-title-navigation'
+import {
+  extractTocFromTiptapDoc,
+  formatTocForAi,
+  formatTocItemForAi,
+  type ArticleTocItem,
+} from '@/lib/article-toc'
+
+// Optional tools must not block the writing surface. Mount them only when opened.
+const ImageGenerationModal = dynamic(() => import('@/components/ImageGenerationModal').then(m => m.ImageGenerationModal), { ssr: false })
+const ImageCropModal = dynamic(() => import('@/components/ImageCropModal').then(m => m.ImageCropModal), { ssr: false })
+const ImageToolModal = dynamic(() => import('@/components/ImageToolModal').then(m => m.ImageToolModal), { ssr: false })
+const WeChatPublishModal = dynamic(() => import('@/components/WeChatPublishModal').then(m => m.WeChatPublishModal), { ssr: false })
+const EditorAiChatPanel = dynamic(() => import('@/components/EditorAiChatPanel').then(m => m.EditorAiChatPanel), { ssr: false })
+const AIModal = dynamic(() => import('@/lib/ai-modal').then(m => m.AIModal), { ssr: false })
 
 type SaveFeedback =
-  | { type: 'success' | 'error'; message: string; slug?: string }
+  | { type: 'success' | 'error'; message: string; slug?: string; published?: boolean; canStartNew?: boolean }
   | null
 
 type PublishStatus = 'public' | 'draft' | 'encrypted' | 'unlisted'
 type SaveState = 'saved' | 'dirty' | 'saving' | 'error'
+type SidebarTab = 'properties' | 'ai'
+
+type EditorAiToolInsertTarget = {
+  mode: 'cursor' | 'section'
+  sectionNumber?: number
+  sectionTitle?: string
+}
+
+type EditorAiToolOutput = {
+  status: 'success' | 'error'
+  message: string
+}
+
+type EditorAiReadArticleContentOutput = {
+  status: 'success' | 'error'
+  message: string
+  scope: 'all' | 'selection'
+  content: string
+  charCount: number
+  truncated: boolean
+  title: string
+  sectionToc: string
+  currentSection: string
+  selectedText: string
+}
+
+type EditorAiEditArticleContentInput = {
+  action: 'replace' | 'delete'
+  target: {
+    mode: 'selection' | 'exactText' | 'all'
+    exactText?: string
+    occurrence?: number
+    useLastMatch?: boolean
+  }
+  replacementMarkdown?: string
+  expectedText?: string
+}
 
 const SIDEBAR_KEY = 'qmblog:sidebar-open'
+const TOC_COLLAPSED_KEY = 'qmblog:editor-toc-collapsed'
 const AUTOSAVE_DEBOUNCE_MS = 1500
 const AUTOSAVE_MAX_RETRY_DELAY_MS = 10000
 const SITE_DISPLAY_URL = getSiteDisplayUrl()
@@ -89,6 +162,13 @@ function calcReadTime(chars: number): string {
   return `约${minutes}分钟阅读`
 }
 
+function createEditorDraftDocumentKey() {
+  const random = typeof crypto !== 'undefined' && 'randomUUID' in crypto
+    ? crypto.randomUUID()
+    : Math.random().toString(36).slice(2)
+  return `draft:${Date.now()}-${random}`
+}
+
 function relativeTime(ts: number): string {
   const diff = Math.floor((Date.now() - ts) / 1000)
   if (diff < 60) return '刚刚'
@@ -96,8 +176,56 @@ function relativeTime(ts: number): string {
   return `${Math.floor(diff / 3600)}小时前`
 }
 
+function normalizeSectionTitle(value: string) {
+  return value.trim().replace(/\s+/g, ' ').toLowerCase()
+}
+
+function findSectionInsertPosition(doc: ProseMirrorNode, target?: EditorAiToolInsertTarget) {
+  if (!target || target.mode !== 'section') return null
+
+  const sectionTitle = target.sectionTitle ? normalizeSectionTitle(target.sectionTitle) : ''
+  const sectionNumber = Number.isInteger(target.sectionNumber) && Number(target.sectionNumber) > 0
+    ? Number(target.sectionNumber)
+    : null
+  let matchedPos: number | null = null
+  let seenSections = 0
+
+  doc.descendants((node, pos) => {
+    if (matchedPos !== null) return false
+    if (node.type.name !== 'heading') return true
+    const level = Number(node.attrs.level)
+    if (level !== 2 && level !== 3) return true
+
+    seenSections += 1
+    const title = normalizeSectionTitle(node.textContent || '')
+    const matchesNumber = sectionNumber !== null && seenSections === sectionNumber
+    const matchesTitle = Boolean(sectionTitle) && title.includes(sectionTitle)
+
+    if (matchesNumber || matchesTitle) {
+      matchedPos = pos + node.nodeSize
+      return false
+    }
+
+    return true
+  })
+
+  return matchedPos
+}
+
+function syncEditorHeadingAnchors(root: HTMLElement | null, tocItems: ArticleTocItem[]) {
+  if (!root || tocItems.length === 0) return
+
+  const headings = Array.from(root.querySelectorAll<HTMLElement>('h1, h2, h3'))
+  for (const [index, item] of tocItems.entries()) {
+    const heading = headings[index]
+    if (!heading) continue
+    heading.id = item.id
+  }
+}
+
 interface NovelEditorProps {
   initialData?: {
+    id: number
     slug: string
     title: string
     html: string
@@ -112,6 +240,7 @@ interface NovelEditorProps {
 }
 
 type DraftMetaState = {
+  postId: number | null
   editSlug: string | null
   slug: string
   category: string
@@ -131,6 +260,7 @@ export function NovelEditor({ initialData }: NovelEditorProps = {}) {
   const fileUploadRef = useRef<HTMLInputElement | null>(null)
 
   // ── Fields ──
+  const [postId, setPostId] = useState<number | null>(initialData?.id ?? null)
   const [editSlug, setEditSlug] = useState(initialData?.slug ?? null)
   const [title, setTitle] = useState('')
   const latestTitleRef = useRef('')
@@ -145,11 +275,20 @@ export function NovelEditor({ initialData }: NovelEditorProps = {}) {
   const [description, setDescription] = useState(initialData?.description || '')
   const [coverImage, setCoverImage] = useState(initialData?.cover_image || '')
   const [slug, setSlug] = useState(initialData?.slug || '')
+  const [previewHtml, setPreviewHtml] = useState(initialData?.html || '')
+  const [wechatThemeConfig, setWechatThemeConfig] = useState<WechatExportThemeConfig>(DEFAULT_WECHAT_EXPORT_THEME_CONFIG)
+  const [selectedWechatThemeId, setSelectedWechatThemeId] = useState(DEFAULT_WECHAT_EXPORT_THEME_CONFIG.defaultThemeId)
 
   // ── UI state ──
   const [sidebarOpen, setSidebarOpen] = useState(false)
+  const [sidebarTab, setSidebarTab] = useState<SidebarTab>('properties')
+  const [tocItems, setTocItems] = useState<ArticleTocItem[]>([])
+  const [activeTocId, setActiveTocId] = useState('')
+  const [tocCollapsed, setTocCollapsed] = useState(false)
+  const [mobilePreviewOpen, setMobilePreviewOpen] = useState(false)
   const [publishPanelOpen, setPublishPanelOpen] = useState(false)
   const [wechatPublishOpen, setWechatPublishOpen] = useState(false)
+  const [copywritingMenuOpen, setCopywritingMenuOpen] = useState(false)
   const [saving, setSaving] = useState(false)
   const [uploadingImage, setUploadingImage] = useState(false)
   const [uploadProgress, setUploadProgress] = useState(0)
@@ -161,18 +300,35 @@ export function NovelEditor({ initialData }: NovelEditorProps = {}) {
   const [cropImageTarget, setCropImageTarget] = useState<EditorImageActionTarget | null>(null)
   const [, setTick] = useState(0) // force re-render for relative time
   const publishPanelRef = useRef<HTMLDivElement>(null)
+  const copywritingMenuRef = useRef<HTMLDivElement>(null)
   const titleRef = useRef<HTMLTextAreaElement>(null)
+  const editorScrollAreaRef = useRef<HTMLDivElement>(null)
+  const mobilePreviewScrollRef = useRef<HTMLDivElement>(null)
   const toast = useToast()
+
+  const selectedWechatTheme = useMemo(() => (
+    getWechatExportTheme(wechatThemeConfig, selectedWechatThemeId)
+  ), [wechatThemeConfig, selectedWechatThemeId])
+
+  const activeTocItem = useMemo(() => (
+    tocItems.find((item) => item.id === activeTocId) || null
+  ), [activeTocId, tocItems])
+
+  const [mobileWechatPreviewHtml, setMobileWechatPreviewHtml] = useState('')
+  const [mobileWechatPreviewError, setMobileWechatPreviewError] = useState(false)
+  const [mobileWechatPreviewRetry, setMobileWechatPreviewRetry] = useState(0)
 
   // Draft save refs
   const draftSaveTimerRef = useRef<number | null>(null)
   const retrySaveTimerRef = useRef<number | null>(null)
   const autosaveAbortRef = useRef<AbortController | null>(null)
   const autosaveSeqRef = useRef(0)
+  const draftAiDocumentKeyRef = useRef(createEditorDraftDocumentKey())
   const lastAutosaveSnapshotRef = useRef<string | null>(null)
   const skipNextEditorUpdateRef = useRef(Boolean(initialData?.html))
   const slugInputFocusedRef = useRef(false)
   const latestMetaRef = useRef<DraftMetaState>({
+    postId: initialData?.id ?? null,
     editSlug: initialData?.slug ?? null,
     slug: initialData?.slug || '',
     category: initialData?.category || '未分类',
@@ -184,11 +340,14 @@ export function NovelEditor({ initialData }: NovelEditorProps = {}) {
   // ── Init ──
   useEffect(() => {
     if (initialData) {
+      const initialHtml = normalizeWechatPublishingHtml(initialData.html || '')
       latestTitleRef.current = initialData.title
       setTitle(initialData.title)
+      setPreviewHtml(initialHtml)
       setInitialContent(EMPTY_DOCUMENT)
     } else {
       // 新文章，使用空文档
+      setPreviewHtml('')
       setInitialContent(EMPTY_DOCUMENT)
     }
     setDraftReady(true)
@@ -196,8 +355,16 @@ export function NovelEditor({ initialData }: NovelEditorProps = {}) {
     // Load sidebar preference
     if (typeof window !== 'undefined') {
       setSidebarOpen(window.localStorage.getItem(SIDEBAR_KEY) === 'true')
+      setTocCollapsed(window.localStorage.getItem(TOC_COLLAPSED_KEY) === 'true')
     }
   }, []) // eslint-disable-line react-hooks/exhaustive-deps
+
+  useEffect(() => {
+    void fetchWechatExportThemeConfig().then((nextConfig) => {
+      setWechatThemeConfig(nextConfig)
+      setSelectedWechatThemeId(getPreferredWechatExportThemeId(nextConfig))
+    })
+  }, [])
 
   // Persist sidebar preference
   useEffect(() => {
@@ -207,7 +374,14 @@ export function NovelEditor({ initialData }: NovelEditorProps = {}) {
   }, [sidebarOpen])
 
   useEffect(() => {
+    if (typeof window !== 'undefined') {
+      window.localStorage.setItem(TOC_COLLAPSED_KEY, String(tocCollapsed))
+    }
+  }, [tocCollapsed])
+
+  useEffect(() => {
     latestMetaRef.current = {
+      postId,
       editSlug,
       slug,
       category,
@@ -215,7 +389,7 @@ export function NovelEditor({ initialData }: NovelEditorProps = {}) {
       description,
       coverImage,
     }
-  }, [editSlug, slug, category, tags, description, coverImage])
+  }, [postId, editSlug, slug, category, tags, description, coverImage])
 
   // Relative time ticker
   useEffect(() => {
@@ -239,17 +413,20 @@ export function NovelEditor({ initialData }: NovelEditorProps = {}) {
     }
   }, [draftReady, editSlug])
 
-  // Click outside to close publish panel
+  // Click outside to close floating header panels
   useEffect(() => {
-    if (!publishPanelOpen) return
+    if (!publishPanelOpen && !copywritingMenuOpen) return
     const handler = (e: MouseEvent) => {
       if (publishPanelRef.current && !publishPanelRef.current.contains(e.target as Node)) {
         setPublishPanelOpen(false)
       }
+      if (copywritingMenuRef.current && !copywritingMenuRef.current.contains(e.target as Node)) {
+        setCopywritingMenuOpen(false)
+      }
     }
     document.addEventListener('mousedown', handler)
     return () => document.removeEventListener('mousedown', handler)
-  }, [publishPanelOpen])
+  }, [copywritingMenuOpen, publishPanelOpen])
 
   // Keyboard shortcuts
   useEffect(() => {
@@ -274,7 +451,6 @@ export function NovelEditor({ initialData }: NovelEditorProps = {}) {
     handleInputModalConfirm,
     imageModal,
     inputModal,
-    openDocumentAIModal,
     openDocumentImageModal,
   } = useEditorAuxiliaryModals({
     title,
@@ -388,7 +564,7 @@ export function NovelEditor({ initialData }: NovelEditorProps = {}) {
   ) => {
     if (typeof window === 'undefined' || !draftReady || !editor) return
 
-    const { editSlug: currentSlug, slug: nextSlugRaw, category, tags, description, coverImage } = latestMetaRef.current
+    const { postId: currentPostId, editSlug: currentSlug, slug: nextSlugRaw, category, tags, description, coverImage } = latestMetaRef.current
     const nextSlug = normalizePostSlug(nextSlugRaw)
     const normalizedTitle = nextTitle.trim() || '无标题'
     const contentJson = editor.getJSON()
@@ -429,12 +605,13 @@ export function NovelEditor({ initialData }: NovelEditorProps = {}) {
     setSaveState('saving')
 
     try {
-      if (currentSlug) {
+      if (currentPostId || currentSlug) {
         const res = await fetch('/api/posts', {
           method: 'PATCH',
           headers: { 'Content-Type': 'application/json' },
           body: JSON.stringify({
-            current_slug: currentSlug,
+            current_id: currentPostId ?? undefined,
+            current_slug: currentSlug || undefined,
             new_slug: nextSlug && nextSlug !== currentSlug ? nextSlug : undefined,
             title: normalizedTitle,
             html,
@@ -447,14 +624,21 @@ export function NovelEditor({ initialData }: NovelEditorProps = {}) {
           signal: controller.signal,
         })
 
-        const data = await res.json().catch(() => ({})) as { error?: string; slug?: string }
+        const data = await res.json().catch(() => ({})) as { error?: string; id?: number; slug?: string }
         if (!res.ok) {
           throw new Error(data.error || '自动保存失败')
         }
 
         if (requestId !== autosaveSeqRef.current) return
 
-        const persistedSlug = typeof data.slug === 'string' ? data.slug : currentSlug
+        if (typeof data.id === 'number') {
+          latestMetaRef.current = {
+            ...latestMetaRef.current,
+            postId: data.id,
+          }
+          setPostId(data.id)
+        }
+        const persistedSlug = typeof data.slug === 'string' ? data.slug : currentSlug || nextSlug
         if (persistedSlug !== currentSlug || latestMetaRef.current.slug !== persistedSlug) {
           syncPersistedSlug(persistedSlug, currentSlug)
         }
@@ -475,13 +659,20 @@ export function NovelEditor({ initialData }: NovelEditorProps = {}) {
           signal: controller.signal,
         })
 
-        const data = await res.json().catch(() => ({})) as { error?: string; slug?: string }
+        const data = await res.json().catch(() => ({})) as { error?: string; id?: number; slug?: string }
         if (!res.ok) {
           throw new Error(data.error || '自动保存失败')
         }
 
         if (requestId !== autosaveSeqRef.current) return
 
+        if (typeof data.id === 'number') {
+          latestMetaRef.current = {
+            ...latestMetaRef.current,
+            postId: data.id,
+          }
+          setPostId(data.id)
+        }
         if (typeof data.slug === 'string' && data.slug) {
           syncPersistedSlug(data.slug, null, true)
         }
@@ -576,7 +767,11 @@ export function NovelEditor({ initialData }: NovelEditorProps = {}) {
     setFeedback(null)
     try {
       const optimizedFile = await optimizeImageForUpload(file, EDITOR_IMAGE_OPTIMIZE_OPTIONS)
-      const result = await uploadEditorFile(optimizedFile, (p) => setUploadProgress(p))
+      const result = await uploadEditorFile(optimizedFile, (p) => setUploadProgress(p), {
+        ...getCurrentAssetArticleTarget(),
+        role: 'inline',
+        source: 'upload',
+      })
       if (editorRef.current) scheduleDraftSave(latestTitleRef.current, editorRef.current)
       return result.url
     } catch (error) {
@@ -626,13 +821,45 @@ export function NovelEditor({ initialData }: NovelEditorProps = {}) {
     }
   }
 
+  const insertCollageImage = async (file: File, targetInsertPos: number | null) => {
+    const editor = editorRef.current
+    if (!editor) {
+      setFeedback({ type: 'error', message: '编辑器还没准备好' })
+      return
+    }
+
+    setUploadingImage(true)
+    setUploadProgress(0)
+    setFeedback(null)
+
+    try {
+      const result = await uploadEditorFile(file, (p) => setUploadProgress(p), {
+        ...getCurrentAssetArticleTarget(),
+        role: 'inline',
+        source: 'collage',
+      })
+      insertGeneratedImageAtPosition(editor, result.url, file.name || '拼图', targetInsertPos)
+      scheduleDraftSave(latestTitleRef.current, editor)
+    } catch (error) {
+      setFeedback({ type: 'error', message: error instanceof Error ? error.message : '拼图上传失败' })
+      throw error
+    } finally {
+      setUploadingImage(false)
+      setUploadProgress(0)
+    }
+  }
+
   // ── Cover image upload ──
   const coverInputRef = useRef<HTMLInputElement>(null)
   const handleCoverUpload = async (file: File) => {
     setUploadingImage(true); setUploadProgress(0)
     try {
       const optimizedFile = await optimizeImageForUpload(file, COVER_IMAGE_OPTIMIZE_OPTIONS)
-      const result = await uploadEditorFile(optimizedFile, (p) => setUploadProgress(p))
+      const result = await uploadEditorFile(optimizedFile, (p) => setUploadProgress(p), {
+        ...getCurrentAssetArticleTarget(),
+        role: 'cover',
+        source: 'upload',
+      })
       setCoverImage(result.url)
       markDirty({ coverImage: result.url })
     } catch (error) {
@@ -764,8 +991,10 @@ export function NovelEditor({ initialData }: NovelEditorProps = {}) {
     setSaving(true); setSaveState('saving'); setFeedback(null)
 
     try {
-      const isEdit = editSlug !== null
-      const url = isEdit ? `/api/admin/posts/${editSlug}` : '/api/posts'
+      const currentPostId = latestMetaRef.current.postId ?? postId
+      const currentEditSlug = latestMetaRef.current.editSlug ?? editSlug
+      const isEdit = currentEditSlug !== null
+      const url = isEdit ? `/api/admin/posts/${currentEditSlug}` : '/api/posts'
       const method = isEdit ? 'PUT' : 'POST'
 
       let statusFields: { status: string; is_hidden: number; password?: string | null }
@@ -780,7 +1009,8 @@ export function NovelEditor({ initialData }: NovelEditorProps = {}) {
         method,
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
-          slug: normalizedSlug || (isEdit ? editSlug : undefined),
+          id: currentPostId ?? undefined,
+          slug: normalizedSlug || (isEdit ? currentEditSlug : undefined),
           title: normalizedTitle, content, html, category,
           ...statusFields,
           tags, description: normalizedDescription, cover_image: coverImage || null,
@@ -788,14 +1018,22 @@ export function NovelEditor({ initialData }: NovelEditorProps = {}) {
       })
       const result = (await response.json()) as {
         success?: boolean
+        id?: number
         slug?: string
         error?: string
       }
       if (!response.ok || !result.success) throw new Error(result.error || '保存失败')
 
+      if (typeof result.id === 'number') {
+        latestMetaRef.current = {
+          ...latestMetaRef.current,
+          postId: result.id,
+        }
+        setPostId(result.id)
+      }
       const persistedSlug: string | null = typeof result.slug === 'string'
         ? result.slug
-        : (isEdit ? editSlug : null)
+        : (isEdit ? currentEditSlug : null)
       const snapshot = buildAutosaveSnapshot({
         currentSlug: persistedSlug,
         nextSlug: persistedSlug || '',
@@ -816,15 +1054,27 @@ export function NovelEditor({ initialData }: NovelEditorProps = {}) {
           setDescription(normalizedDescription)
         }
         if (persistedSlug) {
-          syncPersistedSlug(persistedSlug, editSlug, true)
+          syncPersistedSlug(persistedSlug, currentEditSlug, true)
         }
-        setFeedback({ type: 'success', message: '文章已更新。', slug: persistedSlug || editSlug || undefined })
+        setFeedback({
+          type: 'success',
+          message: '文章已更新。',
+          slug: persistedSlug || currentEditSlug || undefined,
+          published: publishStatus !== 'draft',
+          canStartNew: true,
+        })
       } else {
         if (!description && normalizedDescription) {
           setDescription(normalizedDescription)
         }
         const msgs = { public: '已发布', draft: '草稿已保存', encrypted: '已发布（加密）', unlisted: '已发布（链接访问）' }
-        setFeedback({ type: 'success', message: `${msgs[publishStatus]}`, slug: result.slug })
+        setFeedback({
+          type: 'success',
+          message: `${msgs[publishStatus]}`,
+          slug: result.slug,
+          published: publishStatus !== 'draft',
+          canStartNew: true,
+        })
         setTitle('')
         latestTitleRef.current = ''
         lastAutosaveSnapshotRef.current = null
@@ -839,29 +1089,73 @@ export function NovelEditor({ initialData }: NovelEditorProps = {}) {
     }
   }
 
-  const handleCopyWechat = async () => {
+  const handleStartNewArticle = () => {
+    clearAutosaveTimers()
+    abortAutosaveRequest()
+
+    const editor = editorRef.current
+    setPostId(null)
+    setEditSlug(null)
+    setTitle('')
+    latestTitleRef.current = ''
+    setCharCount(0)
+    setCategory('未分类')
+    setPublishStatus('public')
+    setTags([])
+    setDescription('')
+    setCoverImage('')
+    setSlug('')
+    setPreviewHtml('')
+    setPublishPanelOpen(false)
+    setWechatPublishOpen(false)
+    setSaving(false)
+    setUploadingImage(false)
+    setUploadProgress(0)
+    setPendingMetadataTargets([])
+    setFeedback(null)
+    setSaveState('saved')
+    setLastSavedAt(Date.now())
+    setReferenceImageTarget(null)
+    setCropImageTarget(null)
+
+    draftAiDocumentKeyRef.current = createEditorDraftDocumentKey()
+    lastAutosaveSnapshotRef.current = null
+    latestMetaRef.current = {
+      postId: null,
+      editSlug: null,
+      slug: '',
+      category: '未分类',
+      tags: [],
+      description: '',
+      coverImage: '',
+    }
+
+    skipNextEditorUpdateRef.current = true
+    editor?.commands.clearContent()
+    window.history.replaceState({}, '', '/editor?new=1')
+    window.requestAnimationFrame(() => titleRef.current?.focus())
+  }
+
+  const getCurrentCopyExport = () => {
     const editor = editorRef.current
     const normalizedTitle = title.trim() || '无标题'
 
     if (!editor) {
-      toast.error('编辑器还没准备好。')
-      return
+      return {
+        title: normalizedTitle,
+        html: '',
+        hasContent: false,
+      }
     }
 
     const content = editor.getText({ blockSeparator: '\n\n' }).trim()
     const html = editor.getHTML()
     const hasContent = content || /<(img|video|audio|iframe)\s/i.test(html)
 
-    if (!hasContent) {
-      toast.error('正文还是空的。')
-      return
-    }
-
-    try {
-      await copyAsWechatArticleFormat(normalizedTitle, html)
-      toast.success('已复制公众号格式')
-    } catch (error) {
-      toast.error(error instanceof Error ? error.message : '复制公众号格式失败')
+    return {
+      title: normalizedTitle,
+      html,
+      hasContent: Boolean(hasContent),
     }
   }
 
@@ -884,11 +1178,36 @@ export function NovelEditor({ initialData }: NovelEditorProps = {}) {
     }
 
     try {
-      await downloadArticleAsPdf(normalizedTitle, html)
+      const { downloadArticleAsPdf } = await import('@/lib/wechat-copy')
+      await downloadArticleAsPdf(normalizedTitle, html, { theme: selectedWechatTheme })
     } catch (error) {
       toast.error(error instanceof Error ? error.message : '导出 PDF 失败')
     }
   }
+
+  const handleWechatThemeChange = (themeId: string) => {
+    setSelectedWechatThemeId(themeId)
+    rememberPreferredWechatExportThemeId(themeId)
+  }
+
+  const handleFormatCopywriting = useCallback((scope: ChineseCopywritingScope) => {
+    const editor = editorRef.current
+    if (!editor) {
+      toast.error('编辑器还没准备好。')
+      return
+    }
+
+    const changed = formatChineseCopywritingInEditor(editor, scope)
+    setCopywritingMenuOpen(false)
+
+    if (!changed) {
+      toast.info(scope === 'document' ? '全文排版已是整理状态' : '当前段落已是整理状态')
+      return
+    }
+
+    markDirty()
+    toast.success(scope === 'document' ? '已整理全文排版' : '已整理当前段落')
+  }, [markDirty, toast])
 
   const handleOpenWechatPublish = () => {
     const editor = editorRef.current
@@ -935,7 +1254,74 @@ export function NovelEditor({ initialData }: NovelEditorProps = {}) {
 
   useEffect(() => {
     resizeTextareaHeight(titleRef.current)
-  }, [title, sidebarOpen, draftReady])
+  }, [title, sidebarOpen, mobilePreviewOpen, draftReady])
+
+  const syncMobilePreviewScroll = useCallback(() => {
+    const source = editorScrollAreaRef.current
+    const target = mobilePreviewScrollRef.current
+    if (!source || !target) return
+
+    const headerOffset = 56
+    const rect = source.getBoundingClientRect()
+    const sourceTop = window.scrollY + rect.top
+    const sourceViewport = Math.max(1, window.innerHeight - headerOffset)
+    const sourceScrollable = Math.max(1, source.scrollHeight - sourceViewport)
+    const sourceProgress = Math.min(
+      1,
+      Math.max(0, (window.scrollY + headerOffset - sourceTop) / sourceScrollable),
+    )
+    const targetScrollable = Math.max(0, target.scrollHeight - target.clientHeight)
+    target.scrollTop = targetScrollable * sourceProgress
+  }, [])
+
+  useEffect(() => {
+    if (!mobilePreviewOpen) return
+
+    let frame: number | null = null
+    const requestSync = () => {
+      if (frame !== null) return
+      frame = window.requestAnimationFrame(() => {
+        frame = null
+        syncMobilePreviewScroll()
+      })
+    }
+
+    requestSync()
+    window.addEventListener('scroll', requestSync, { passive: true })
+    window.addEventListener('resize', requestSync)
+
+    return () => {
+      if (frame !== null) window.cancelAnimationFrame(frame)
+      window.removeEventListener('scroll', requestSync)
+      window.removeEventListener('resize', requestSync)
+    }
+  }, [mobilePreviewOpen, previewHtml, title, syncMobilePreviewScroll])
+
+  useEffect(() => {
+    if (!mobilePreviewOpen) return
+
+    let cancelled = false
+    setMobileWechatPreviewHtml('')
+    setMobileWechatPreviewError(false)
+    void import('@/lib/wechat-copy')
+      .then(async ({ buildWechatPreviewArticleHtml }) => {
+        if (cancelled) return
+        const baseHtml = buildWechatPreviewArticleHtml(title.trim() || '无标题', previewHtml || '<p></p>', {
+          theme: selectedWechatTheme,
+        })
+        setMobileWechatPreviewHtml(baseHtml)
+        const { renderVisualDiagramsInHtml } = await import('@/lib/content-enhancers')
+        const renderedHtml = await renderVisualDiagramsInHtml(baseHtml)
+        if (!cancelled) setMobileWechatPreviewHtml(renderedHtml)
+      })
+      .catch(() => {
+        if (!cancelled) setMobileWechatPreviewError(true)
+      })
+
+    return () => {
+      cancelled = true
+    }
+  }, [mobilePreviewOpen, previewHtml, selectedWechatTheme, title, mobileWechatPreviewRetry])
 
   // ── Status config ──
   const STATUS_CONFIG = [
@@ -944,6 +1330,326 @@ export function NovelEditor({ initialData }: NovelEditorProps = {}) {
     { key: 'encrypted' as const, label: '加密访问', desc: '需要密码才能查看', Icon: Lock },
     { key: 'unlisted' as const, label: '链接访问', desc: '不在首页显示，但可通过链接访问', Icon: Link2 },
   ]
+
+  const openAiChatPanel = useCallback(() => {
+    setSidebarOpen(true)
+    setSidebarTab('ai')
+  }, [])
+
+  const refreshToc = useCallback((editor: EditorInstance | null) => {
+    const items = extractTocFromTiptapDoc(editor?.state.doc)
+    setTocItems(items)
+    setActiveTocId((currentId) => {
+      if (items.length === 0) return ''
+      if (currentId && items.some((item) => item.id === currentId)) return currentId
+      return items[0]?.id || ''
+    })
+    window.requestAnimationFrame(() => {
+      syncEditorHeadingAnchors(editor?.view.dom as HTMLElement | null, items)
+    })
+  }, [])
+
+  const syncEditorContentState = useCallback((editor: EditorInstance) => {
+    scheduleDraftSave(latestTitleRef.current, editor)
+    setPreviewHtml(editor.getHTML())
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    const st = editor.storage as any
+    setCharCount(st.characterCount?.characters?.() ?? 0)
+    refreshToc(editor)
+  }, [refreshToc, scheduleDraftSave])
+
+  const handleEditorCompositionEnd = useCallback(() => {
+    const editor = editorRef.current
+    if (!editor) return
+    syncEditorContentState(editor)
+  }, [syncEditorContentState])
+
+  const scrollToTocItem = useCallback((item: ArticleTocItem) => {
+    setActiveTocId(item.id)
+
+    const editor = editorRef.current
+    if (!editor) return
+
+    const rawPos = Number.isFinite(item.pos) ? Number(item.pos) : 1
+    const selectionPos = Math.min(Math.max(rawPos + 1, 1), editor.state.doc.content.size)
+    editor.chain().focus().setTextSelection(selectionPos).run()
+
+    window.requestAnimationFrame(() => {
+      try {
+        const coords = editor.view.coordsAtPos(selectionPos)
+        window.scrollTo({ top: Math.max(0, coords.top + window.scrollY - 82), behavior: 'smooth' })
+        return
+      } catch {}
+
+      const target = editor.view.dom.querySelector<HTMLElement>(`#${CSS.escape(item.id)}`)
+      if (target) {
+        const top = target.getBoundingClientRect().top + window.scrollY - 82
+        window.scrollTo({ top: Math.max(0, top), behavior: 'smooth' })
+      }
+    })
+  }, [])
+
+  const getSelectedEditorText = useCallback(() => {
+    const editor = editorRef.current
+    const selection = editor?.state.selection
+    if (!editor || !selection || selection.empty) return ''
+    return editor.state.doc.textBetween(selection.from, selection.to, '\n\n').trim()
+  }, [])
+
+  const getEditorChatDocumentKey = useCallback(() => {
+    if (postId) return `post:${postId}`
+    const currentSlug = normalizePostSlug(slug) || editSlug
+    if (currentSlug) return `slug:${currentSlug}`
+    return draftAiDocumentKeyRef.current
+  }, [editSlug, postId, slug])
+
+  const getCurrentAssetArticleTarget = useCallback(() => ({
+    postId,
+    slug: normalizePostSlug(slug) || editSlug || '',
+  }), [editSlug, postId, slug])
+
+  const getEditorChatContext = useCallback((): EditorAiChatContext => {
+    const editor = editorRef.current
+    return {
+      documentKey: getEditorChatDocumentKey(),
+      postId,
+      title: title.trim(),
+      documentText: editor?.getText({ blockSeparator: '\n\n' }).trim() || '',
+      sectionToc: formatTocForAi(tocItems),
+      currentSection: formatTocItemForAi(activeTocItem),
+      selectedText: getSelectedEditorText(),
+      description: description.trim(),
+      category,
+      tags,
+      slug: normalizePostSlug(slug) || editSlug || '',
+    }
+  }, [activeTocItem, category, description, editSlug, getEditorChatDocumentKey, getSelectedEditorText, postId, slug, tags, title, tocItems])
+
+  const insertAiChatText = useCallback((markdown: string) => {
+    const editor = editorRef.current
+    const trimmed = markdown.trim()
+    if (!editor || !trimmed) return
+
+    replaceEditorRangeWithMarkdown(editor, trimmed, {
+      from: editor.state.selection.to,
+      to: editor.state.selection.to,
+    })
+    markDirty()
+  }, [markDirty])
+
+  const setAiChatTitle = useCallback((nextTitle: string): EditorAiToolOutput => {
+    const normalizedTitle = nextTitle.trim().replace(/\s+/g, ' ')
+    if (!normalizedTitle) return { status: 'error', message: '标题不能为空' }
+
+    setTitle(normalizedTitle)
+    latestTitleRef.current = normalizedTitle
+    window.requestAnimationFrame(() => resizeTextareaHeight(titleRef.current))
+    markDirty()
+    return { status: 'success', message: '已替换文章标题' }
+  }, [markDirty])
+
+  const setAiChatDescription = useCallback((nextDescription: string): EditorAiToolOutput => {
+    const normalizedDescription = nextDescription.trim().replace(/\s+/g, ' ').slice(0, 300)
+    if (!normalizedDescription) return { status: 'error', message: '摘要不能为空' }
+
+    setDescription(normalizedDescription)
+    markDirty({ description: normalizedDescription })
+    return { status: 'success', message: '已更新文章摘要' }
+  }, [markDirty])
+
+  const setAiChatTags = useCallback((nextTags: string[]): EditorAiToolOutput => {
+    const normalizedTags = nextTags.map((tag) => tag.trim()).filter(Boolean).slice(0, 10)
+    if (normalizedTags.length === 0) return { status: 'error', message: '标签不能为空' }
+
+    setTagInput('')
+    setTags(normalizedTags)
+    markDirty({ tags: normalizedTags })
+    return { status: 'success', message: '已更新文章标签' }
+  }, [markDirty])
+
+  const readAiChatArticleContent = useCallback((
+    scope: 'all' | 'selection' = 'all',
+    maxChars?: number,
+  ): EditorAiReadArticleContentOutput => {
+    const editor = editorRef.current
+    const limit = Number.isInteger(maxChars)
+      ? Math.max(1000, Math.min(30000, Number(maxChars)))
+      : 16000
+    const selectedText = getSelectedEditorText()
+
+    if (!editor) {
+      return {
+        status: 'error',
+        message: '编辑器还没有准备好',
+        scope,
+        content: '',
+        charCount: 0,
+        truncated: false,
+        title: title.trim(),
+        sectionToc: formatTocForAi(tocItems),
+        currentSection: formatTocItemForAi(activeTocItem),
+        selectedText,
+      }
+    }
+
+    const fullText = editor.getText({ blockSeparator: '\n\n' }).trim()
+    const content = scope === 'selection' ? selectedText : fullText
+    if (scope === 'selection' && !content) {
+      return {
+        status: 'error',
+        message: '当前没有选中文本',
+        scope,
+        content: '',
+        charCount: 0,
+        truncated: false,
+        title: title.trim(),
+        sectionToc: formatTocForAi(tocItems),
+        currentSection: formatTocItemForAi(activeTocItem),
+        selectedText,
+      }
+    }
+
+    return {
+      status: 'success',
+      message: scope === 'selection' ? '已读取当前选中文本' : '已读取当前文章正文',
+      scope,
+      content: content.slice(0, limit),
+      charCount: content.length,
+      truncated: content.length > limit,
+      title: title.trim(),
+      sectionToc: formatTocForAi(tocItems),
+      currentSection: formatTocItemForAi(activeTocItem),
+      selectedText,
+    }
+  }, [activeTocItem, getSelectedEditorText, title, tocItems])
+
+  const editAiChatArticleContent = useCallback((input: EditorAiEditArticleContentInput): EditorAiToolOutput => {
+    const editor = editorRef.current
+    if (!editor) return { status: 'error', message: '编辑器还没有准备好' }
+
+    const action = input.action === 'delete' ? 'delete' : 'replace'
+    const targetMode = input.target?.mode
+    const replacementMarkdown = input.replacementMarkdown?.trim() || ''
+    const expectedText = input.expectedText?.trim() || ''
+
+    if (action === 'replace' && !replacementMarkdown) {
+      return { status: 'error', message: '替换内容不能为空' }
+    }
+
+    if (targetMode === 'all') {
+      if (action === 'delete') return { status: 'error', message: '不能通过 AI 工具删除整篇正文' }
+      const currentText = editor.getText({ blockSeparator: '\n\n' }).trim()
+      if (expectedText && !currentText.includes(expectedText)) {
+        return { status: 'error', message: '整篇正文已变化，安全校验未通过，请重新读取正文后再替换' }
+      }
+
+      editor.commands.setContent(renderMarkdownToEditorHtml(replacementMarkdown))
+      markDirty()
+      return { status: 'success', message: '已替换整篇正文' }
+    }
+
+    let range: { from: number; to: number } | null = null
+    let targetText = ''
+
+    if (targetMode === 'selection') {
+      const selection = editor.state.selection
+      if (!selection || selection.empty) return { status: 'error', message: '当前没有选中文本' }
+      range = { from: selection.from, to: selection.to }
+      targetText = editor.state.doc.textBetween(selection.from, selection.to, '\n\n').trim()
+    } else if (targetMode === 'exactText') {
+      const exactText = input.target?.exactText?.trim() || ''
+      if (!exactText) return { status: 'error', message: '请提供要编辑的原文片段' }
+      const resolved = resolveExactTextRangeInDoc(editor.state.doc, exactText, {
+        occurrence: input.target?.occurrence,
+        useLastMatch: input.target?.useLastMatch,
+      })
+
+      if (resolved.status === 'ambiguous') {
+        return {
+          status: 'error',
+          message: `这段原文在正文中出现了 ${resolved.matchCount} 次，请指定 occurrence 或选中目标段落后重试`,
+        }
+      }
+
+      if (resolved.status === 'not_found') {
+        return { status: 'error', message: '没有在当前正文中找到要编辑的原文片段，请重新读取正文后再试' }
+      }
+
+      range = { from: resolved.from, to: resolved.to }
+      targetText = editor.state.doc.textBetween(resolved.from, resolved.to, '\n\n').trim()
+    } else {
+      return { status: 'error', message: '正文编辑目标不完整' }
+    }
+
+    if (!range || range.from === range.to) return { status: 'error', message: '没有找到可编辑的正文范围' }
+    if (expectedText && !targetText.includes(expectedText)) {
+      return { status: 'error', message: '目标正文已变化，安全校验未通过，请重新读取正文后再编辑' }
+    }
+
+    if (action === 'delete') {
+      editor.chain().focus().deleteRange(range).run()
+      markDirty()
+      return { status: 'success', message: targetMode === 'selection' ? '已删除选中文本' : '已删除匹配原文' }
+    }
+
+    const changed = replaceEditorRangeWithMarkdown(editor, replacementMarkdown, range)
+    if (!changed) return { status: 'error', message: '替换失败，请检查替换内容' }
+
+    markDirty()
+    return { status: 'success', message: targetMode === 'selection' ? '已替换选中文本' : '已替换匹配原文' }
+  }, [markDirty])
+
+  const insertAiChatMarkdown = useCallback((
+    markdown: string,
+    target?: EditorAiToolInsertTarget,
+  ): EditorAiToolOutput => {
+    const editor = editorRef.current
+    const trimmed = markdown.trim()
+    if (!editor) return { status: 'error', message: '编辑器还没有准备好' }
+    if (!trimmed) return { status: 'error', message: '插入内容不能为空' }
+
+    let insertPos = editor.state.selection.to
+    if (target?.mode === 'section') {
+      const sectionPos = findSectionInsertPosition(editor.state.doc, target)
+      if (sectionPos === null) {
+        return { status: 'error', message: '没有找到指定章节，请先把光标放到目标位置再重试' }
+      }
+      insertPos = sectionPos
+    }
+
+    replaceEditorRangeWithMarkdown(editor, trimmed, { from: insertPos, to: insertPos })
+    markDirty()
+    return {
+      status: 'success',
+      message: target?.mode === 'section' ? '已插入到指定章节' : '已插入到当前光标位置',
+    }
+  }, [markDirty])
+
+  const insertAiChatImage = useCallback((
+    imageUrl: string,
+    alt: string,
+    target?: EditorAiToolInsertTarget,
+  ): EditorAiToolOutput => {
+    const editor = editorRef.current
+    if (!editor) return { status: 'error', message: '编辑器还没有准备好' }
+    if (!imageUrl) return { status: 'error', message: '图片地址为空' }
+
+    let insertPos = editor.state.selection?.to ?? null
+    if (target?.mode === 'section') {
+      const sectionPos = findSectionInsertPosition(editor.state.doc, target)
+      if (sectionPos === null) {
+        return { status: 'error', message: '没有找到指定章节，图片已生成但未自动插入' }
+      }
+      insertPos = sectionPos
+    }
+
+    insertGeneratedImageAtPosition(editor, imageUrl, alt || 'AI 生成配图', insertPos)
+    markDirty()
+    return {
+      status: 'success',
+      message: target?.mode === 'section' ? '图片已插入到指定章节' : '图片已插入到当前光标位置',
+    }
+  }, [markDirty])
 
   // ── Save status display ──
   const saveStatusText = saveState === 'saved' ? `已保存 · ${relativeTime(lastSavedAt)}` :
@@ -1011,12 +1717,31 @@ export function NovelEditor({ initialData }: NovelEditorProps = {}) {
           <div className="flex items-center gap-1">
             <button
               type="button"
-              onClick={handleCopyWechat}
-              className="inline-flex h-8 w-8 items-center justify-center rounded-md text-[var(--editor-muted)] hover:bg-[var(--editor-soft)] hover:text-[var(--editor-accent)] transition"
-              title="复制公众号格式"
+              onClick={() => setTocCollapsed((value) => !value)}
+              disabled={tocItems.length === 0}
+              aria-pressed={!tocCollapsed}
+              className={`hidden h-8 w-8 items-center justify-center rounded-md transition lg:inline-flex ${
+                !tocCollapsed && tocItems.length > 0
+                  ? 'bg-[var(--editor-accent)]/10 text-[var(--editor-accent)]'
+                  : 'text-[var(--editor-muted)] hover:bg-[var(--editor-soft)] hover:text-[var(--editor-accent)]'
+              } disabled:cursor-not-allowed disabled:opacity-35`}
+              title={tocCollapsed ? '展开目录' : '收起目录'}
+              aria-label={tocCollapsed ? '展开目录' : '收起目录'}
             >
-              <Copy className="h-4 w-4" />
+              <ListTree className="h-4 w-4" />
             </button>
+
+            <CopyFormatDropdown
+              getTitle={() => getCurrentCopyExport().title}
+              getHtml={() => getCurrentCopyExport().html}
+              hasContent={() => getCurrentCopyExport().hasContent}
+              wechatOptions={{
+                themeId: selectedWechatThemeId,
+                theme: selectedWechatTheme,
+              }}
+              buttonClassName="inline-flex h-8 w-8 items-center justify-center rounded-md text-[var(--editor-muted)] hover:bg-[var(--editor-soft)] hover:text-[var(--editor-accent)] transition"
+              iconClassName="h-4 w-4"
+            />
 
             <button
               type="button"
@@ -1036,22 +1761,77 @@ export function NovelEditor({ initialData }: NovelEditorProps = {}) {
               <FileDown className="h-4 w-4" />
             </button>
 
+            <div className="relative" ref={copywritingMenuRef}>
+              <button
+                type="button"
+                onClick={() => setCopywritingMenuOpen((open) => !open)}
+                aria-expanded={copywritingMenuOpen}
+                aria-haspopup="menu"
+                className="inline-flex h-8 w-8 items-center justify-center rounded-md text-[var(--editor-muted)] transition hover:bg-[var(--editor-soft)] hover:text-[var(--editor-accent)]"
+                title="中文排版整理"
+                aria-label="中文排版整理"
+              >
+                <Pilcrow className="h-4 w-4" />
+              </button>
+              {copywritingMenuOpen && (
+                <div className="absolute right-0 top-9 z-50 min-w-36 rounded-lg border border-[var(--editor-line)] bg-[var(--editor-panel)] p-1 shadow-[0_16px_36px_rgba(37,32,24,0.14)]">
+                  <button
+                    type="button"
+                    onClick={() => handleFormatCopywriting('block')}
+                    className="flex w-full items-center rounded-md px-3 py-2 text-left text-sm text-[var(--editor-ink)] transition hover:bg-[var(--editor-soft)]"
+                  >
+                    当前段落
+                  </button>
+                  <button
+                    type="button"
+                    onClick={() => handleFormatCopywriting('document')}
+                    className="flex w-full items-center rounded-md px-3 py-2 text-left text-sm text-[var(--editor-ink)] transition hover:bg-[var(--editor-soft)]"
+                  >
+                    全文
+                  </button>
+                </div>
+              )}
+            </div>
+
             <button
               type="button"
-              onClick={(e) => openDocumentAIModal(e.currentTarget)}
-              className="inline-flex h-8 w-8 items-center justify-center rounded-md text-[var(--editor-muted)] hover:bg-[var(--editor-soft)] hover:text-[var(--editor-accent)] transition"
-              title="Ask AI（基于标题和正文）"
+              onClick={openAiChatPanel}
+              aria-pressed={showSidebar && sidebarTab === 'ai'}
+              className={`inline-flex h-8 w-8 items-center justify-center rounded-md transition ${
+                showSidebar && sidebarTab === 'ai'
+                  ? 'bg-[var(--editor-accent)]/10 text-[var(--editor-accent)]'
+                  : 'text-[var(--editor-muted)] hover:bg-[var(--editor-soft)] hover:text-[var(--editor-accent)]'
+              }`}
+              title="AI 对话"
+              aria-label="AI 对话"
             >
               <WandSparkles className="h-4 w-4" />
             </button>
 
             <button
               type="button"
-              onClick={openDocumentImageModal}
-              className="inline-flex h-8 w-8 items-center justify-center rounded-md text-[var(--editor-muted)] hover:bg-[var(--editor-soft)] hover:text-[var(--editor-accent)] transition"
-              title="生成图片"
+              onMouseDown={(event) => event.preventDefault()}
+              onClick={() => openDocumentImageModal('generate')}
+              aria-label="图片工具"
+              className="inline-flex h-8 w-8 items-center justify-center rounded-md text-[var(--editor-muted)] transition hover:bg-[var(--editor-soft)] hover:text-[var(--editor-accent)]"
+              title="图片工具"
             >
               <ImageIcon className="h-4 w-4" />
+            </button>
+
+            <button
+              type="button"
+              onClick={() => setMobilePreviewOpen((open) => !open)}
+              aria-pressed={mobilePreviewOpen}
+              aria-label={mobilePreviewOpen ? '关闭手机预览' : '打开手机预览'}
+              className={`hidden h-8 w-8 items-center justify-center rounded-md transition lg:inline-flex ${
+                mobilePreviewOpen
+                  ? 'bg-[var(--editor-accent)]/10 text-[var(--editor-accent)]'
+                  : 'text-[var(--editor-muted)] hover:bg-[var(--editor-soft)] hover:text-[var(--editor-ink)]'
+              }`}
+              title={mobilePreviewOpen ? '关闭手机预览' : '手机预览'}
+            >
+              <Smartphone className="h-4 w-4" />
             </button>
 
             {/* Sidebar toggle */}
@@ -1147,7 +1927,18 @@ export function NovelEditor({ initialData }: NovelEditorProps = {}) {
             }`}>
               <span>{feedback.message}</span>
               {feedback.slug && (
-                <a href={`/${feedback.slug}`} className="font-medium underline underline-offset-2">打开文章</a>
+                <a href={`/${feedback.slug}`} className="font-medium underline underline-offset-2">
+                  {feedback.published ? '查看已发布' : '打开文章'}
+                </a>
+              )}
+              {feedback.canStartNew && (
+                <button
+                  type="button"
+                  onClick={handleStartNewArticle}
+                  className="font-medium underline underline-offset-2"
+                >
+                  写新文章
+                </button>
               )}
               <button type="button" onClick={() => setFeedback(null)} className="ml-auto"><X className="h-3.5 w-3.5" /></button>
             </div>
@@ -1162,9 +1953,24 @@ export function NovelEditor({ initialData }: NovelEditorProps = {}) {
 
       {/* ── Main layout: editor + sidebar ── */}
       <div className="flex">
+        <EditorTocRail
+          items={tocItems}
+          collapsed={tocCollapsed}
+          onCollapsedChange={setTocCollapsed}
+          activeId={activeTocId}
+          onActiveIdChange={setActiveTocId}
+          onItemSelect={scrollToTocItem}
+          root={editorRef.current?.view.dom as HTMLElement | null}
+        />
+
         {/* Main editor area */}
         <main className="flex-1 min-w-0">
-          <div className="mx-auto max-w-4xl px-4 pt-10 pb-8 sm:px-6">
+          <div
+            ref={editorScrollAreaRef}
+            className={`mx-auto px-4 pt-10 pb-8 transition-[max-width,padding] duration-200 sm:px-6 ${
+              mobilePreviewOpen ? 'max-w-[430px] sm:px-5' : 'max-w-4xl'
+            }`}
+          >
             {/* Title input */}
             <div className="pb-4">
               <textarea
@@ -1189,19 +1995,20 @@ export function NovelEditor({ initialData }: NovelEditorProps = {}) {
                   void handleSelectedFiles(files)
                 }}
                 onKeyDown={(e) => {
-                  if (e.key === 'Enter') {
-                    e.preventDefault()
-                    editorRef.current?.chain().focus().run()
-                  }
+                  if (!isTitleEndEnter(e) || !editorRef.current) return
+                  e.preventDefault()
+                  focusEditorDocumentStart(editorRef.current)
                 }}
-                className="editor-title-textarea block w-full appearance-none bg-transparent p-0 m-0 resize-none overflow-hidden border-0 rounded-none shadow-none outline-none ring-0 focus:border-0 focus:outline-none focus:ring-0 focus-visible:outline-none focus-visible:ring-0 text-4xl font-bold leading-tight tracking-tight text-[var(--editor-ink)] placeholder:text-[var(--stone-gray)]"
+                className={`editor-title-textarea block w-full appearance-none bg-transparent p-0 m-0 resize-none overflow-hidden border-0 rounded-none shadow-none outline-none ring-0 focus:border-0 focus:outline-none focus:ring-0 focus-visible:outline-none focus-visible:ring-0 font-bold leading-tight text-[var(--editor-ink)] placeholder:text-[var(--stone-gray)] ${
+                  mobilePreviewOpen ? 'text-2xl' : 'text-4xl'
+                }`}
                 style={{ minHeight: '52px' }}
               />
             </div>
 
             {/* Novel editor */}
             {!draftReady ? (
-              <div className="editor-surface" />
+              <div className={mobilePreviewOpen ? 'editor-surface editor-mobile-preview-surface' : 'editor-surface'} />
             ) : (
               <EditorRoot>
                 <div>
@@ -1209,12 +2016,13 @@ export function NovelEditor({ initialData }: NovelEditorProps = {}) {
                     initialContent={initialContent}
                     // eslint-disable-next-line @typescript-eslint/no-explicit-any
                     extensions={imageExtensions as any}
-                    className="editor-surface"
+                    className={mobilePreviewOpen ? 'editor-surface editor-mobile-preview-surface' : 'editor-surface'}
                     immediatelyRender={false}
                     editorProps={buildEditorProps(
                       (file) => uploadImageAndGetUrl(file),
                       (file) => void insertNonImageFile(file),
                       'editor-main-prose',
+                      handleEditorCompositionEnd,
                     )}
                     onCreate={({ editor }) => {
                       editorRef.current = editor
@@ -1222,10 +2030,13 @@ export function NovelEditor({ initialData }: NovelEditorProps = {}) {
                       const st = editor.storage as any
                       setCharCount(st.characterCount?.characters?.() ?? 0)
                       if (initialData?.html) {
+                        const initialHtml = normalizeWechatPublishingHtml(initialData.html)
                         skipNextEditorUpdateRef.current = true
-                        editor.commands.setContent(initialData.html)
+                        editor.commands.setContent(initialHtml)
+                        setPreviewHtml(initialHtml)
                       } else {
                         skipNextEditorUpdateRef.current = false
+                        setPreviewHtml(editor.getHTML())
                       }
 
                       if (initialData?.slug) {
@@ -1233,7 +2044,7 @@ export function NovelEditor({ initialData }: NovelEditorProps = {}) {
                           currentSlug: initialData.slug,
                           nextSlug: initialData.slug,
                           title: initialData.title || '无标题',
-                          html: initialData.html || '',
+                          html: normalizeWechatPublishingHtml(initialData.html || ''),
                           description: (initialData.description || '').trim(),
                           category: initialData.category || '未分类',
                           tags: initialData.tags || [],
@@ -1242,9 +2053,13 @@ export function NovelEditor({ initialData }: NovelEditorProps = {}) {
                       } else {
                         lastAutosaveSnapshotRef.current = null
                       }
+
+                      refreshToc(editor)
                     }}
                     onUpdate={({ editor }) => {
                       editorRef.current = editor
+
+                      if (editor.view.composing) return
 
                       if (skipNextEditorUpdateRef.current) {
                         skipNextEditorUpdateRef.current = false
@@ -1254,12 +2069,10 @@ export function NovelEditor({ initialData }: NovelEditorProps = {}) {
                         return
                       }
 
-                      scheduleDraftSave(latestTitleRef.current, editor)
-                      // eslint-disable-next-line @typescript-eslint/no-explicit-any
-                      const st = editor.storage as any
-                      setCharCount(st.characterCount?.characters?.() ?? 0)
+                      syncEditorContentState(editor)
                     }}
                   >
+                    <BlockHandleMenu />
                     <FormattingBubble />
                     <SlashMenu />
                   </EditorContent>
@@ -1269,23 +2082,86 @@ export function NovelEditor({ initialData }: NovelEditorProps = {}) {
           </div>
         </main>
 
+        {mobilePreviewOpen && (
+          <section
+            className="group relative hidden w-[430px] shrink-0 border-l border-[var(--editor-line)] bg-white lg:block"
+            style={{ position: 'sticky', top: '3.5rem', height: 'calc(100vh - 3.5rem)' }}
+          >
+            <div className="pointer-events-none absolute right-3 top-3 z-20 opacity-0 transition group-hover:pointer-events-auto group-hover:opacity-100 group-focus-within:pointer-events-auto group-focus-within:opacity-100">
+              <WeChatThemeSelector
+                themes={wechatThemeConfig.themes}
+                value={selectedWechatThemeId}
+                onChange={handleWechatThemeChange}
+                variant="icon"
+                align="right"
+              />
+            </div>
+            <div
+              ref={mobilePreviewScrollRef}
+              className="mobile-preview-scroll h-full overflow-y-auto bg-white px-5 py-8"
+            >
+              {mobileWechatPreviewError ? (
+                <div role="alert" className="text-center text-sm text-gray-500">
+                  预览加载失败。<button type="button" className="ml-2 underline" onClick={() => setMobileWechatPreviewRetry(value => value + 1)}>重试</button>
+                </div>
+              ) : !mobileWechatPreviewHtml && (
+                <div role="status" className="text-center text-sm text-gray-500">加载预览...</div>
+              )}
+              <div
+                className="mobile-preview-article mobile-wechat-preview mx-auto w-full max-w-[390px] overflow-hidden rounded-lg bg-white"
+                dangerouslySetInnerHTML={{ __html: mobileWechatPreviewHtml }}
+              />
+            </div>
+          </section>
+        )}
+
         {/* ── Right Sidebar ── */}
         <aside
-          className={`shrink-0 border-l border-[var(--editor-line)] bg-[var(--background)] overflow-y-auto overflow-x-hidden transition-all duration-200 ease-in-out ${
-            showSidebar ? 'w-[280px]' : 'w-0 border-l-0'
+          className={`shrink-0 overflow-hidden border-l border-[var(--editor-line)] bg-[var(--background)] transition-all duration-200 ease-in-out ${
+            showSidebar ? (sidebarTab === 'ai' ? 'w-[380px]' : 'w-[300px]') : 'w-0 border-l-0'
           }`}
           style={{ position: 'sticky', top: '3.5rem', height: 'calc(100vh - 3.5rem)' }}
         >
           {showSidebar && (
-            <div className="w-[280px] px-5 py-6 space-y-6">
-              {/* Close button */}
-              <div className="flex items-center justify-between">
-                <span className="text-xs font-semibold text-[var(--stone-gray)] uppercase tracking-wider">文章设置</span>
-                <button type="button" onClick={() => setSidebarOpen(false)} className="text-[var(--stone-gray)] hover:text-[var(--editor-ink)]">
+            <div className={`${sidebarTab === 'ai' ? 'w-[380px]' : 'w-[300px]'} flex h-full min-h-0 flex-col`}>
+              <div className="flex shrink-0 items-center gap-2 border-b border-[var(--editor-line)] px-4 py-3">
+                <div className="grid flex-1 grid-cols-2 rounded-lg bg-[var(--editor-soft)] p-1">
+                  <button
+                    type="button"
+                    onClick={() => setSidebarTab('properties')}
+                    className={`rounded-md px-3 py-1.5 text-xs font-semibold transition ${
+                      sidebarTab === 'properties'
+                        ? 'bg-[var(--editor-panel)] text-[var(--editor-ink)] shadow-sm'
+                        : 'text-[var(--stone-gray)] hover:text-[var(--editor-ink)]'
+                    }`}
+                  >
+                    文章属性
+                  </button>
+                  <button
+                    type="button"
+                    onClick={() => setSidebarTab('ai')}
+                    className={`rounded-md px-3 py-1.5 text-xs font-semibold transition ${
+                      sidebarTab === 'ai'
+                        ? 'bg-[var(--editor-panel)] text-[var(--editor-ink)] shadow-sm'
+                        : 'text-[var(--stone-gray)] hover:text-[var(--editor-ink)]'
+                    }`}
+                  >
+                    AI 对话
+                  </button>
+                </div>
+                <button
+                  type="button"
+                  onClick={() => setSidebarOpen(false)}
+                  className="inline-flex h-8 w-8 shrink-0 items-center justify-center rounded-lg text-[var(--stone-gray)] transition hover:bg-[var(--editor-soft)] hover:text-[var(--editor-ink)]"
+                  aria-label="关闭侧栏"
+                  title="关闭侧栏"
+                >
                   <X className="h-4 w-4" />
                 </button>
               </div>
 
+              {sidebarTab === 'properties' ? (
+              <div className="min-h-0 flex-1 space-y-6 overflow-y-auto px-5 py-6">
               {/* Tags */}
               <div>
                 <div className="mb-2 flex items-center justify-between gap-2">
@@ -1373,32 +2249,14 @@ export function NovelEditor({ initialData }: NovelEditorProps = {}) {
                   </button>
                 </div>
                 {coverImage ? (
-                  <div className="relative rounded-md overflow-hidden border border-[var(--editor-line)] group" style={{ height: 120 }}>
-                    {/* eslint-disable-next-line @next/next/no-img-element */}
-                    <img src={coverImage} alt="封面预览" className="w-full h-full object-cover" />
-                    {/* 悬停时显示的操作按钮 */}
-                    <div className="absolute inset-0 bg-black/40 opacity-0 group-hover:opacity-100 transition-opacity flex items-center justify-center gap-2">
-                      <button
-                        type="button"
-                        onClick={() => coverInputRef.current?.click()}
-                        className="flex items-center justify-center w-9 h-9 rounded-full bg-[var(--editor-panel)] text-[var(--editor-ink)] hover:bg-[var(--editor-soft)] transition"
-                        title="重新上传"
-                      >
-                        <ImageIcon className="h-4 w-4" />
-                      </button>
-                      <button
-                        type="button"
-                        onClick={() => {
-                          setCoverImage('')
-                          markDirty({ coverImage: '' })
-                        }}
-                        className="flex items-center justify-center w-9 h-9 rounded-full bg-[var(--editor-panel)] text-rose-600 hover:bg-[var(--editor-soft)] transition"
-                        title="删除封面"
-                      >
-                        <X className="h-4 w-4" />
-                      </button>
-                    </div>
-                  </div>
+                  <EditorCoverImagePreview
+                    src={coverImage}
+                    onUpload={() => coverInputRef.current?.click()}
+                    onRemove={() => {
+                      setCoverImage('')
+                      markDirty({ coverImage: '' })
+                    }}
+                  />
                 ) : (
                   <button
                     type="button"
@@ -1461,69 +2319,100 @@ export function NovelEditor({ initialData }: NovelEditorProps = {}) {
                   {SITE_DISPLAY_URL}/{normalizePostSlug(slug) || editSlug || '自动生成'}
                 </div>
               </div>
+              </div>
+              ) : (
+                <EditorAiChatPanel
+                  getContext={getEditorChatContext}
+                  onInsertText={insertAiChatText}
+                  onSetTitle={setAiChatTitle}
+                  onSetDescription={setAiChatDescription}
+                  onSetTags={setAiChatTags}
+                  onReadArticleContent={readAiChatArticleContent}
+                  onInsertMarkdown={insertAiChatMarkdown}
+                  onEditArticleContent={editAiChatArticleContent}
+                  onInsertImage={insertAiChatImage}
+                />
+              )}
             </div>
           )}
         </aside>
       </div>
 
-      <WeChatPublishModal
-        isOpen={wechatPublishOpen}
-        onClose={() => setWechatPublishOpen(false)}
-        title={title.trim() || '无标题'}
-        html={editorRef.current?.getHTML() || ''}
-        defaultDigest={description}
-        defaultSourceUrl={wechatSourceUrl}
-        defaultCoverImageUrl={resolvePostCoverImage({
-          cover_image: coverImage,
-          slug: normalizePostSlug(slug) || editSlug || title,
-          title,
-        })}
-      />
+      {wechatPublishOpen && (
+        <WeChatPublishModal
+          isOpen={wechatPublishOpen}
+          onClose={() => setWechatPublishOpen(false)}
+          title={title.trim() || '无标题'}
+          html={editorRef.current?.getHTML() || ''}
+          defaultDigest={description}
+          defaultSourceUrl={wechatSourceUrl}
+          defaultCoverImageUrl={resolvePostCoverImage({
+            cover_image: coverImage,
+            slug: normalizePostSlug(slug) || editSlug || title,
+            title,
+          })}
+          exportThemeId={selectedWechatThemeId}
+        />
+      )}
 
       <InputModal open={inputModal.open} title={inputModal.title} placeholder={inputModal.placeholder} onConfirm={handleInputModalConfirm} onCancel={handleInputModalCancel} />
 
-      <ImageGenerationModal
-        open={imageModal.open}
-        contextText={imageModal.contextText}
-        historyScope="admin-editor"
-        closeOnGenerate={false}
-        onClose={closeImageModal}
-        onInsert={insertGeneratedImage}
-      />
+      {imageModal.open && (
+        <ImageToolModal
+          key={`${imageModal.open ? 'open' : 'closed'}-${imageModal.mode}`}
+          open={imageModal.open}
+          mode={imageModal.mode}
+          contextText={imageModal.contextText}
+          historyScope="admin-editor"
+          insertPos={imageModal.insertPos}
+          closeOnGenerate={false}
+          postId={postId}
+          slug={normalizePostSlug(slug) || editSlug || ''}
+          onClose={closeImageModal}
+          onInsertImage={insertGeneratedImage}
+          onInsertCollage={insertCollageImage}
+        />
+      )}
 
-      <ImageGenerationModal
-        open={Boolean(referenceImageTarget)}
-        contextText=""
-        historyScope="admin-editor"
-        referenceImageUrl={referenceImageTarget?.src}
-        allowReplace
-        defaultPlacementMode="replace"
-        closeOnGenerate={false}
-        generationMode="foreground"
-        onClose={() => setReferenceImageTarget(null)}
-        onInsert={(imageUrl, alt, placementMode) => {
-          if (!referenceImageTarget) return
-          applyImageActionResult(referenceImageTarget, imageUrl, alt, placementMode ?? 'replace')
-          setReferenceImageTarget(null)
-        }}
-      />
+      {Boolean(referenceImageTarget) && (
+        <ImageGenerationModal
+          open={Boolean(referenceImageTarget)}
+          contextText=""
+          historyScope="admin-editor"
+          referenceImageUrl={referenceImageTarget?.src}
+          allowReplace
+          defaultPlacementMode="replace"
+          closeOnGenerate={false}
+          generationMode="foreground"
+          postId={postId}
+          slug={normalizePostSlug(slug) || editSlug || ''}
+          onClose={() => setReferenceImageTarget(null)}
+          onInsert={(imageUrl, alt, placementMode) => {
+            if (!referenceImageTarget) return
+            applyImageActionResult(referenceImageTarget, imageUrl, alt, placementMode ?? 'replace')
+            setReferenceImageTarget(null)
+          }}
+        />
+      )}
 
-      <ImageCropModal
-        open={Boolean(cropImageTarget)}
-        imageUrl={cropImageTarget?.src || ''}
-        imageAlt={cropImageTarget?.alt}
-        defaultPlacementMode="replace"
-        onClose={() => setCropImageTarget(null)}
-        onApply={async (file, placementMode) => {
-          if (!cropImageTarget) return
+      {Boolean(cropImageTarget) && (
+        <ImageCropModal
+          open={Boolean(cropImageTarget)}
+          imageUrl={cropImageTarget?.src || ''}
+          imageAlt={cropImageTarget?.alt}
+          defaultPlacementMode="replace"
+          onClose={() => setCropImageTarget(null)}
+          onApply={async (file, placementMode) => {
+            if (!cropImageTarget) return
 
-          const uploaded = await uploadImageAndGetUrl(file)
-          applyImageActionResult(cropImageTarget, uploaded, cropImageTarget.alt || file.name, placementMode)
-          setCropImageTarget(null)
-        }}
-      />
+            const uploaded = await uploadImageAndGetUrl(file)
+            applyImageActionResult(cropImageTarget, uploaded, cropImageTarget.alt || file.name, placementMode)
+            setCropImageTarget(null)
+          }}
+        />
+      )}
 
-      {editorRef.current && (
+      {aiModal.open && editorRef.current && (
         <AIModal
           editor={editorRef.current}
           isOpen={aiModal.open}

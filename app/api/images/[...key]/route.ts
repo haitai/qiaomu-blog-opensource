@@ -91,10 +91,15 @@ export async function GET(
 ) {
   const { key } = await params
   const requestPath = key?.join('/') || ''
-  const objectKey = requestPath
-    .split('/')
-    .map((segment) => decodeURIComponent(segment))
-    .join('/')
+  let objectKey: string
+  try {
+    objectKey = requestPath
+      .split('/')
+      .map((segment) => decodeURIComponent(segment))
+      .join('/')
+  } catch {
+    return new Response('Bad image key', { status: 400 })
+  }
 
   const env = (await getAppCloudflareEnv()) as RuntimeEnv
 
@@ -163,6 +168,16 @@ export async function GET(
       const totalSize = headInfo.size
       const end = endStr ? Math.min(parseInt(endStr, 10), totalSize - 1) : totalSize - 1
       const length = end - start + 1
+
+      if (start >= totalSize || end < start) {
+        return new Response('Range Not Satisfiable', {
+          status: 416,
+          headers: {
+            'Content-Range': `bytes */${totalSize}`,
+            'Accept-Ranges': 'bytes',
+          },
+        })
+      }
 
       const object = await env.IMAGES.get(objectKey, {
         range: { offset: start, length },

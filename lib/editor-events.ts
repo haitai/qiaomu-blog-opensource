@@ -1,8 +1,12 @@
 export const TRIGGER_IMAGE_UPLOAD_EVENT = 'editor:trigger-image-upload'
 export const TRIGGER_FILE_UPLOAD_EVENT = 'editor:trigger-file-upload'
 export const TRIGGER_INPUT_MODAL_EVENT = 'editor:trigger-input-modal'
+export const TRIGGER_IMAGE_TOOL_EVENT = 'editor:trigger-image-tool'
 export const TRIGGER_IMAGE_GENERATION_EVENT = 'editor:trigger-image-generation'
 export const TRIGGER_AI_MODAL_EVENT = 'editor:trigger-ai-modal'
+export const TRIGGER_COLLAGE_MODAL_EVENT = 'editor:trigger-collage-modal'
+
+export type TriggerImageToolMode = 'generate' | 'collage' | 'library'
 
 export interface InputModalDetail {
   title: string
@@ -13,6 +17,16 @@ export interface InputModalDetail {
 export interface TriggerImageGenerationDetail {
   insertPos: number
   selectedText: string
+}
+
+export interface TriggerCollageModalDetail {
+  insertPos: number | null
+}
+
+export interface TriggerImageToolDetail {
+  insertPos: number | null
+  selectedText?: string
+  mode: TriggerImageToolMode
 }
 
 export interface TriggerAIModalDetail {

@@ -3,7 +3,7 @@ export type AIProviderCategory = '海外大模型' | '海外聚合' | '国内大
 export interface AIProviderPreset {
   id: string
   name: string
-  providerType: 'openai_compatible' | 'gemini'
+  providerType: 'openai_compatible' | 'anthropic_compatible' | 'gemini'
   category: AIProviderCategory
   baseUrl: string
   defaultModel: string
@@ -98,8 +98,8 @@ export const AI_PROVIDER_PRESETS: AIProviderPreset[] = [
     providerType: 'openai_compatible',
     category: '国内大模型',
     baseUrl: 'https://api.deepseek.com/v1',
-    defaultModel: 'deepseek-chat',
-    quickModels: ['deepseek-chat', 'deepseek-reasoner'],
+    defaultModel: 'deepseek-v4-flash',
+    quickModels: ['deepseek-v4-flash'],
     apiKeyUrl: 'https://platform.deepseek.com/api_keys',
     description: 'DeepSeek 官方',
     recommended: true,
@@ -159,6 +159,21 @@ export const AI_PROVIDER_PRESETS: AIProviderPreset[] = [
     quickModels: ['ep-20250616135538-zdz4b'],
     apiKeyUrl: 'https://www.volcengine.com/experience/ark',
     description: '豆包 / 火山引擎',
+  },
+  {
+    id: 'aigocode_anthropic',
+    name: 'AIGoCode (Anthropic)',
+    providerType: 'anthropic_compatible',
+    category: '国内聚合',
+    baseUrl: 'https://api.aigocode.com/v1',
+    defaultModel: 'claude-opus-4-8',
+    quickModels: [
+      'claude-opus-4-8',
+      'claude-opus-4-7',
+    ],
+    apiKeyUrl: 'https://aigocode.com',
+    description: 'AIGoCode 的 Anthropic 兼容协议，默认使用已通过连接测试的 Claude Opus 模型。',
+    recommended: true,
   },
   {
     id: 'aihubmix',

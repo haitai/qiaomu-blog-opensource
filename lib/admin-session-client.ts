@@ -8,6 +8,7 @@ interface AdminSessionSnapshot {
 }
 
 const listeners = new Set<() => void>()
+const ADMIN_HINT_COOKIE_NAME = 'qmblog_admin_hint'
 let snapshot: AdminSessionSnapshot = {
   authenticated: false,
   checked: false,
@@ -18,6 +19,21 @@ function emitChange() {
   for (const listener of listeners) {
     listener()
   }
+}
+
+function hasAdminSessionHint() {
+  if (typeof document === 'undefined') return false
+  return document.cookie
+    .split(';')
+    .map((cookie) => cookie.trim())
+    .some((cookie) => cookie.startsWith(`${ADMIN_HINT_COOKIE_NAME}=`))
+}
+
+function setAdminSessionHint(enabled: boolean) {
+  if (typeof document === 'undefined') return
+  document.cookie = enabled
+    ? `${ADMIN_HINT_COOKIE_NAME}=1; path=/; max-age=${60 * 60 * 24 * 30}; samesite=lax`
+    : `${ADMIN_HINT_COOKIE_NAME}=; path=/; max-age=0; samesite=lax`
 }
 
 async function loadAdminSession(force = false) {
@@ -39,11 +55,13 @@ async function loadAdminSession(force = false) {
         authenticated: Boolean(response.ok && data.authenticated),
         checked: true,
       }
+      setAdminSessionHint(snapshot.authenticated)
     } catch {
       snapshot = {
         authenticated: false,
         checked: true,
       }
+      setAdminSessionHint(false)
     } finally {
       emitChange()
     }
@@ -62,7 +80,15 @@ function subscribe(onStoreChange: () => void) {
   listeners.add(onStoreChange)
 
   if (!snapshot.checked && !inflight) {
-    void loadAdminSession()
+    if (hasAdminSessionHint()) {
+      void loadAdminSession()
+    } else {
+      snapshot = {
+        authenticated: false,
+        checked: true,
+      }
+      queueMicrotask(emitChange)
+    }
   }
 
   return () => {

@@ -3,6 +3,7 @@ import { authenticateRequest } from '@/lib/admin-auth'
 import { getAppCloudflareEnv } from '@/lib/cloudflare'
 import { generateEditorImage } from '@/lib/ai-image'
 import { ensureAiImageConfigInfrastructure } from '@/lib/ai-image-config'
+import { linkMediaAssetToArticle } from '@/lib/repositories/media-assets'
 
 type ImageBucket = {
   put: (
@@ -45,6 +46,8 @@ export async function POST(req: NextRequest) {
     aspectRatio?: string
     resolution?: string
     profileId?: number | null
+    postId?: number | null
+    slug?: string | null
   }
 
   try {
@@ -72,10 +75,19 @@ export async function POST(req: NextRequest) {
       aspectRatio: body.aspectRatio,
       resolution: body.resolution,
       profileId: body.profileId,
+      source: 'image_modal',
       db,
       env: env as Record<string, string | undefined>,
       images,
     })
+    if (result.assetId) {
+      await linkMediaAssetToArticle(db, {
+        assetId: result.assetId,
+        postId: body.postId,
+        slug: body.slug,
+        role: 'inline',
+      })
+    }
 
     return NextResponse.json({
       success: true,
