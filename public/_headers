@@ -1,0 +1,4 @@
+# Content-hashed Next.js assets are safe to reuse across requests and deployments.
+# https://developers.cloudflare.com/workers/static-assets/headers/
+/_next/static/*
+  Cache-Control: public, max-age=31536000, immutable
