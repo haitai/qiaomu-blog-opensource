@@ -2,10 +2,11 @@
 
 import dynamic from 'next/dynamic'
 import { Component, useEffect, useState, type ReactNode } from 'react'
+import { recoverEditorChunk, resetEditorChunkRecovery } from '@/lib/editor-chunk-recovery'
 
 function ReloadEditorButton() {
   return (
-    <button type="button" className="rounded px-3 py-2 text-sm underline focus-visible:outline-2" onClick={() => window.location.reload()}>
+    <button type="button" className="rounded px-3 py-2 text-sm underline focus-visible:outline-2" onClick={() => { resetEditorChunkRecovery(); window.location.reload() }}>
       重新加载
     </button>
   )
@@ -46,7 +47,20 @@ class EditorLoadBoundary extends Component<{ children: ReactNode }, { failed: bo
 }
 
 const NovelEditor = dynamic(
-  () => import('@/components/NovelEditor').then(m => ({ default: m.NovelEditor })),
+  async () => {
+    try {
+      const editorModule = await import('@/components/NovelEditor')
+      resetEditorChunkRecovery()
+      return { default: editorModule.NovelEditor }
+    } catch (error) {
+      if (await recoverEditorChunk(error)) {
+        // This runs before mounting the editor, so no in-memory edits can be lost.
+        window.location.reload()
+        return await new Promise<never>(() => {})
+      }
+      throw error
+    }
+  },
   {
     ssr: false,
     loading: EditorLoading,
